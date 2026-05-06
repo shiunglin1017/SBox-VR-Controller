@@ -1,4 +1,5 @@
 using Sandbox;
+using TFT.VR.Abstractions;
 
 public sealed class MagazineLoader : Component, Component.ITriggerListener
 {
@@ -12,7 +13,7 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 
 	public void OnTriggerEnter( Collider other )
 	{
-		
+
 		if ( Magazine.IsValid() )
 			return;
 
@@ -47,11 +48,11 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 
 		other.LocalRotation = Rotation.Identity;
 
-		if(!PickupMag)
+		if ( !PickupMag )
 			other.Tags.Add( "uninteractable" );
 
 		SlideT = 0;
-		
+
 	}
 
 	bool Dropping;
@@ -69,12 +70,12 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 		if ( !Magazine.IsValid() )
 			return;
 
-		if (Dropping)
+		if ( Dropping )
 		{
 
-			Magazine.LocalPosition = Vector3.Lerp(MagParent.LocalPosition, MagDrop.LocalPosition,SlideT / MagTime);
+			Magazine.LocalPosition = Vector3.Lerp( MagParent.LocalPosition, MagDrop.LocalPosition, SlideT / MagTime );
 
-			if(SlideT >= MagTime)
+			if ( SlideT >= MagTime )
 			{
 				Magazine.Item.Body.MotionEnabled = true;
 				Magazine.GameObject.SetParent( null );
@@ -96,7 +97,8 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 
 		Magazine.LocalPosition = Vector3.Lerp( MagDrop.LocalPosition, Vector3.Zero, lerp );
 
-		if ( GrabPoint.Hand.Equals(VrhandInteraction.HandEnum.Left) ? Input.VR.LeftHand.ButtonB.IsPressed : Input.VR.RightHand.ButtonB.IsPressed )
+		var controller = GrabPoint.GrabbedHand?.Controller;
+		if ( controller is not null && controller.IsTracked && controller.ButtonB )
 		{
 			Dropping = true;
 			SlideT = 0;

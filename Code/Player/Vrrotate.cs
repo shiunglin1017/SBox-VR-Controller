@@ -1,5 +1,6 @@
 using Sandbox;
 using System;
+using TFT.VR.Abstractions;
 
 public sealed class Vrrotate : Component
 {
@@ -11,14 +12,27 @@ public sealed class Vrrotate : Component
 
 	float snapRotateTimer;
 
+	private IVRInputProvider _input;
+
+	protected override void OnAwake()
+	{
+		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
+	}
+
 	protected override void OnPreRender()
 	{
-		if ( Input.VR == null )
+		if ( IsProxy )
 			return;
+
+		if ( _input is null || !_input.IsAvailable )
+			return;
+
+		var rightStickX = _input.RightHand.Joystick.x;
+
 		if ( DoSnap )
 		{
 			bool Snap = false;
-			if ( MathF.Abs( Input.VR.RightHand.Joystick.Value.x ) < 0.5 )
+			if ( MathF.Abs( rightStickX ) < 0.5 )
 				snapRotateTimer = 0.4f;
 			else
 			{
@@ -31,10 +45,12 @@ public sealed class Vrrotate : Component
 			}
 
 			if ( Snap )
-				RotateAroundPoint( GameObject, Head.WorldPosition, Vector3.Up, MathF.Round( -Input.VR.RightHand.Joystick.Value.x ) * SnapAngle );
+				RotateAroundPoint( GameObject, Head.WorldPosition, Vector3.Up, MathF.Round( -rightStickX ) * SnapAngle );
 		}
 		else
-			RotateAroundPoint( GameObject, Head.WorldPosition, Vector3.Up, Input.VR.RightHand.Joystick.Value.x * Time.Delta * -RotateSpeed );
+		{
+			RotateAroundPoint( GameObject, Head.WorldPosition, Vector3.Up, rightStickX * Time.Delta * -RotateSpeed );
+		}
 	}
 
 	static void RotateAroundPoint( GameObject objectToRotate, Vector3 point, Vector3 axis, float angle )

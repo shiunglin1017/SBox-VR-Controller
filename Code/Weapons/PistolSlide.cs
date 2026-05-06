@@ -1,4 +1,5 @@
 using Sandbox;
+using TFT.VR.Abstractions;
 
 public sealed class PistolSlide : Component
 {
@@ -11,8 +12,8 @@ public sealed class PistolSlide : Component
 	[Property] private float Distance { get; set; }
 	[Property] private float BulletPickupPoint { get; set; } = 0.78f;
 	float _pullBack;
-	[Property] public float PullBack 
-	{ 
+	[Property] public float PullBack
+	{
 		get
 		{
 			return _pullBack;
@@ -66,10 +67,10 @@ public sealed class PistolSlide : Component
 
 		lastPullBack = PullBack;
 
-		if (PullBack == 1 && MainGrabPoint.Held)
+		if ( PullBack == 1 && MainGrabPoint.Held )
 		{
-			var controller = MainGrabPoint.Hand.Equals(VrhandInteraction.HandEnum.Left) ? Input.VR.LeftHand : Input.VR.RightHand;
-			if ( controller.JoystickPress.IsPressed )
+			var controller = MainGrabPoint.GrabbedHand?.Controller;
+			if ( controller is not null && controller.IsTracked && controller.JoystickPress )
 			{
 				minPullBack = 0;
 			}
@@ -80,7 +81,7 @@ public sealed class PistolSlide : Component
 		else
 		{
 			PullBack = MathX.Clamp( Vector3.Dot( -ReferencePoint.WorldTransform.Forward * Distance, GrabPoint.GrabbedHand.Reference.WorldPosition - ReferencePoint.WorldPosition ), 0, 1 );
-			if(PullBack < 1)
+			if ( PullBack < 1 )
 				minPullBack = 0;
 		}
 	}
@@ -92,7 +93,7 @@ public sealed class PistolSlide : Component
 		Barrel.Contents = -1;
 	}
 
-	
+
 	void PulledBack()
 	{
 		if ( HoldingBullet == -2 )

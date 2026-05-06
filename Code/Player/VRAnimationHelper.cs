@@ -2,6 +2,7 @@ using Editor;
 using Sandbox.Services;
 using System;
 using System.Numerics;
+using TFT.VR.Abstractions;
 using static Sandbox.Citizen.VRAnimationHelper;
 
 namespace Sandbox.Citizen;
@@ -26,7 +27,15 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	[Property, Feature( "Hands" )] public VRHand RightHand { get; set; }
 	[Property, Feature( "IK" ), Category( "Arms" )] public EasyIK LeftArmIK { get; set; }
 	[Property, Feature( "IK" ), Category( "Arms" )] public EasyIK RightArmIK { get; set; }
-	List<VRHand> hands => new List<VRHand> { LeftHand, RightHand };
+
+	// Cached once in OnAwake so we don't allocate a List<VRHand> every frame
+	// from Fingers() / AnimateFingers(). Also avoids the .Equals(LeftHand)
+	// comparison pattern - we just iterate by index.
+	private VRHand[] _handsCache;
+
+	// Resolved once via the player's SandboxVRInputProvider so that nothing in
+	// here ever has to read Input.VR / Game.IsRunningInVR directly.
+	private IVRInputProvider _input;
 
 	GameObject _positionReference;
 	private GameObject PositionReference
@@ -212,12 +221,12 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		}
 	}
 
-	protected override  void OnAwake()
+	protected override void OnAwake()
 	{
 		Camera.Enabled = !IsProxy;
 
-		
-
+		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
+		_handsCache = new[] { LeftHand, RightHand };
 	}
 
 	public static Angles ScaleAngles(Angles target, Angles by)
@@ -434,15 +443,20 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		if ( IsProxy )
 			return;
 
-		if ( Input.VR == null )
+		if ( _input is null || !_input.IsAvailable )
 			return;
 
-		var hands = new List<VRHand> { LeftHand, RightHand };
-		foreach ( var hand in hands )
+		// Iterate by index so we can map slot 0 -> Left, 1 -> Right without
+		// reflexive .Equals(LeftHand) comparisons every frame.
+		for ( int i = 0; i < _handsCache.Length; i++ )
 		{
-			var input = hand.Equals( LeftHand ) ? Input.VR.LeftHand : Input.VR.RightHand;
+			var isLeft = i == 0;
+			var input = _input.GetHand( isLeft ? HandSide.Left : HandSide.Right );
 
-			BroadcastFingers( hand.Equals( LeftHand ), input.GetFingerCurl( 0 ), input.GetFingerCurl( 1 ), input.GetFingerCurl( 2 ), input.GetFingerCurl( 3 ), input.GetFingerCurl( 4 ) );
+			BroadcastFingers( isLeft,
+				input.GetFingerCurl( 0 ), input.GetFingerCurl( 1 ),
+				input.GetFingerCurl( 2 ), input.GetFingerCurl( 3 ),
+				input.GetFingerCurl( 4 ) );
 		}
 	}
 
@@ -470,9 +484,13 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 
 	private void Fingers()
 	{
-		foreach ( var hand in hands )
+		if ( _handsCache is null )
+			return;
+
+		for ( int i = 0; i < _handsCache.Length; i++ )
 		{
-			if ( hand.NoControl )
+			var hand = _handsCache[i];
+			if ( hand is null || hand.NoControl )
 				continue;
 			hand.BendFingers();
 		}

@@ -1009,6 +1009,90 @@
           "go": "926ec940-7365-412f-a187-2d908e0d489a",
           "component_type": "SkinnedModelRenderer"
         }
+      },
+      {
+        "__type": "TFT.VR.Services.SandboxVRInputProvider",
+        "__guid": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e60",
+        "Anchor": {
+          "_type": "component",
+          "component_id": "0e5d5e41-b056-450e-b1c4-d19fd3294d49",
+          "go": "6c920800-2cca-4101-ba02-5c43c23db41f",
+          "component_type": "VRAnchor"
+        },
+        "ManagedTrackers": [
+          {
+            "_type": "component",
+            "component_id": "016aa89a-906d-4ad0-a8d8-901b900a002e",
+            "go": "0646d6f2-b1c0-4e10-a38d-64cec6ceafad",
+            "component_type": "VRTrackedObject"
+          },
+          {
+            "_type": "component",
+            "component_id": "94003b4e-d9d4-42fb-9f45-186f0cb034d8",
+            "go": "613af976-0d46-44cd-8194-4ec88f980e48",
+            "component_type": "VRTrackedObject"
+          },
+          {
+            "_type": "component",
+            "component_id": "11a15715-1885-4549-a1b6-89a04816684d",
+            "go": "bcae53ae-fbe5-4cd8-bbc0-8e31f63f0633",
+            "component_type": "VRTrackedObject"
+          }
+        ],
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
+      },
+      {
+        "__type": "TFT.VR.Services.VRMovementInputSource",
+        "__guid": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e61",
+        "Provider": {
+          "_type": "component",
+          "component_id": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e60",
+          "go": "6c920800-2cca-4101-ba02-5c43c23db41f",
+          "component_type": "SandboxVRInputProvider"
+        },
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
+      },
+      {
+        "__type": "TFT.VR.Services.KeyboardMovementInputSource",
+        "__guid": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e62",
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
+      },
+      {
+        "__type": "TFT.VR.Services.CompositeMovementInputSource",
+        "__guid": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e63",
+        "VRSource": {
+          "_type": "component",
+          "component_id": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e61",
+          "go": "6c920800-2cca-4101-ba02-5c43c23db41f",
+          "component_type": "VRMovementInputSource"
+        },
+        "KbmSource": {
+          "_type": "component",
+          "component_id": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e62",
+          "go": "6c920800-2cca-4101-ba02-5c43c23db41f",
+          "component_type": "KeyboardMovementInputSource"
+        },
+        "OnComponentDestroy": null,
+        "OnComponentDisabled": null,
+        "OnComponentEnabled": null,
+        "OnComponentFixedUpdate": null,
+        "OnComponentStart": null,
+        "OnComponentUpdate": null
       }
     ],
     "Children": [
@@ -2442,6 +2526,21 @@
             "PoseSource": "LeftHand",
             "TrackingType": "All",
             "UseRelativeTransform": false
+          },
+          {
+            "__type": "TFT.VR.Services.SandboxVRHandTracker",
+            "__guid": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e64",
+            "Side": "Left",
+            "Reference": {
+              "_type": "gameobject",
+              "go": "613af976-0d46-44cd-8194-4ec88f980e48"
+            },
+            "OnComponentDestroy": null,
+            "OnComponentDisabled": null,
+            "OnComponentEnabled": null,
+            "OnComponentFixedUpdate": null,
+            "OnComponentStart": null,
+            "OnComponentUpdate": null
           }
         ],
         "Children": [
@@ -2475,6 +2574,21 @@
             "PoseSource": "RightHand",
             "TrackingType": "All",
             "UseRelativeTransform": false
+          },
+          {
+            "__type": "TFT.VR.Services.SandboxVRHandTracker",
+            "__guid": "7d4e1f93-8b2a-4c5e-9f4b-1a2b3c4d5e65",
+            "Side": "Right",
+            "Reference": {
+              "_type": "gameobject",
+              "go": "bcae53ae-fbe5-4cd8-bbc0-8e31f63f0633"
+            },
+            "OnComponentDestroy": null,
+            "OnComponentDisabled": null,
+            "OnComponentEnabled": null,
+            "OnComponentFixedUpdate": null,
+            "OnComponentStart": null,
+            "OnComponentUpdate": null
           }
         ],
         "Children": [

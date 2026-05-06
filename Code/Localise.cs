@@ -10,17 +10,22 @@ public sealed class Localise : Component
 
 	protected override void OnStart()
 	{
-		CameraComponent = GetComponentInChildren<CameraComponent>(true);
-		Dresser.Dress();
-		if (IsProxy)
+		CameraComponent = GetComponentInChildren<CameraComponent>( true );
+		Dresser?.Dress();
+		if ( IsProxy )
 		{
-			ShadowBody.GameObject.Destroy();
+			// ShadowBody is optional in the prefab; the original code assumed
+			// it was always assigned and would NRE for proxy players.
+			ShadowBody?.GameObject?.Destroy();
 			return;
 		}
-		
+
+		if ( !MainBody.IsValid() || !CameraComponent.IsValid() )
+			return;
+
 		var clothes = MainBody.GetComponentsInChildren<ModelRenderer>().ToList();
 		BBox eyeBox = BBox.FromPositionAndSize( CameraComponent.WorldPosition, EyeCheckDistance );
-		
+
 		foreach ( var clothing in clothes )
 		{
 			if ( clothing == MainBody )

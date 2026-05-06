@@ -1,9 +1,8 @@
 using Sandbox;
 using Sandbox.Citizen;
 using Sandbox.Physics;
-using Sandbox.VR;
-using System;
-using System.Drawing;
+using System.Linq;
+using TFT.VR.Abstractions;
 
 public sealed class VrhandInteraction : Component
 {
@@ -31,32 +30,53 @@ public sealed class VrhandInteraction : Component
 		Holding
 	}
 
-	private VRController VRController => Hand.Equals( HandEnum.Left ) ? Input.VR.LeftHand : Input.VR.RightHand;
-	private VRAnimationHelper.VRHand AnimatedHand => Hand.Equals( HandEnum.Left ) ? VRAnimationHelper.LeftHand : VRAnimationHelper.RightHand;
+	private IVRInputProvider _input;
+	private IHandTracker _tracker;
+
+	public HandSide HandAsSide => Hand == HandEnum.Left ? HandSide.Left : HandSide.Right;
+
+	/// <summary>
+	/// Live <see cref="IControllerInput"/> for whichever physical controller
+	/// drives this hand. Public so that anything held by this hand (weapons,
+	/// magazines, ...) can poll button state without going back to
+	/// <c>Input.VR</c> directly.
+	/// </summary>
+	public IControllerInput Controller => _input?.GetHand( HandAsSide );
+
+	private VRAnimationHelper.VRHand AnimatedHand =>
+		Hand.Equals( HandEnum.Left ) ? VRAnimationHelper.LeftHand : VRAnimationHelper.RightHand;
 
 	private Rigidbody Body { get; set; }
 	public Rigidbody JointPoint { get; set; }
-	private Sandbox.Physics.FixedJoint FixedJoint { get; set; }
 	private Sandbox.Physics.FixedJoint ItemJoint { get; set; }
-	
-	Vector3 targetPos { get; set; }
-	Rotation targetRot { get; set; }
+
+	Vector3 targetPos;
+	Rotation targetRot;
+
+	protected override void OnAwake()
+	{
+		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
+		_tracker = Components.GetAll<IHandTracker>( FindMode.EverythingInSelfAndAncestors )
+			.FirstOrDefault( t => t.Side == HandAsSide );
+	}
+
 	protected override void OnStart()
 	{
 		Body = GetComponent<Rigidbody>();
 
+		// JointPoint stays kinematic and acts as the world anchor for ItemJoint
+		// while the player is holding something. We no longer wire it to Body
+		// through a spring FixedJoint - that physics chain is what made the
+		// hand lag behind the controller pose.
 		JointPoint = new GameObject().AddComponent<Rigidbody>();
-
 		JointPoint.GameObject.SetParent( GameObject.Parent );
-
 		JointPoint.MotionEnabled = false;
 
-		var p1 = new PhysicsPoint( JointPoint.PhysicsBody, Vector3.Zero );
-		var p2 = new PhysicsPoint( Body.PhysicsBody, Vector3.Zero );
-
-		FixedJoint = PhysicsJoint.CreateFixed( p1, p2 );
-		FixedJoint.SpringLinear = new PhysicsSpring( 150, 5 );
-		FixedJoint.SpringAngular = new PhysicsSpring( 150, 5 );
+		// Hand body is purely kinematic; we drive WorldPosition / WorldRotation
+		// directly each PreRender frame and let triggers / sphere casts do the
+		// rest of the work (no physics impulse on the hand itself).
+		if ( Body.IsValid() )
+			Body.MotionEnabled = false;
 
 		CurrentHandState = HandState.Searching;
 
@@ -65,57 +85,78 @@ public sealed class VrhandInteraction : Component
 	}
 
 	HandState previousHandState;
-	protected override void OnUpdate()
+
+	protected override void OnPreRender()
 	{
-		PositionHand();
+		if ( IsProxy ) return;
+		if ( _input is null || !_input.IsAvailable ) return;
+
+		PositionJointPoint();
 
 		AnimatedHand.NoControl = !CurrentHandState.Equals( HandState.Searching );
 
-		Body.MotionEnabled = CurrentHandState.Equals( HandState.Searching );
+		if ( CurrentHandState == HandState.Searching && _tracker is { IsTracked: true } )
+		{
+			// Direct snap to the controller pose. No physics spring, so the
+			// hand keeps up with the headset frame-for-frame.
+			var pose = _tracker.Pose;
+			WorldPosition = pose.Position;
+			WorldRotation = pose.Rotation;
+		}
 
-		switch (CurrentHandState)
+		switch ( CurrentHandState )
 		{
 			case HandState.Searching:
 				Searching();
 				break;
-			
+
 			case HandState.Holding:
 				Holding();
+				UpdateItemJoint();
 				break;
 		}
 
 		previousHandState = CurrentHandState;
 	}
 
-	protected override void OnPreRender()
+	void UpdateItemJoint()
 	{
-		if ( CurrentHandState == HandState.Holding && ItemJoint.IsValid() )
+		if ( !ItemJoint.IsValid() || !HeldPoint.IsValid() )
+			return;
+
+		ItemJoint.Point1 = new PhysicsPoint(
+			ItemJoint.Point1.Body,
+			HeldPoint.Body.WorldTransform.PointToLocal( HeldPoint.VisualPoint ),
+			HeldPoint.Body.WorldTransform.RotationToLocal( HeldPoint.WorldRotation ) );
+
+		if ( HeldPoint.RifleHold && HeldPoint.SecondaryPoint.Held )
 		{
-			ItemJoint.Point1 = new PhysicsPoint( ItemJoint.Point1.Body, HeldPoint.Body.WorldTransform.PointToLocal( HeldPoint.VisualPoint ), HeldPoint.Body.WorldTransform.RotationToLocal( HeldPoint.WorldRotation ) );
+			var localForward = UpRef.WorldTransform.Forward;
+			var targetForward = HeldPoint.SecondaryPoint.GrabbedHand.UpRef.WorldPosition - UpRef.WorldPosition;
 
-			if(HeldPoint.RifleHold && HeldPoint.SecondaryPoint.Held)
-			{
-				var localForward = UpRef.WorldTransform.Forward;
-
-				var targetForward = HeldPoint.SecondaryPoint.GrabbedHand.UpRef.WorldPosition - UpRef.WorldPosition;
-
-				ItemJoint.Point2 = new PhysicsPoint( ItemJoint.Point2.Body, WorldTransform.PointToLocal( HeldPoint.VisualPoint ), WorldTransform.RotationToLocal( Rotation.FromToRotation(localForward,targetForward) ) );
-			}
-			else
-			{
-				ItemJoint.Point2 = new PhysicsPoint( ItemJoint.Point2.Body, WorldTransform.PointToLocal( HeldPoint.VisualPoint ) );
-			}
-			
-
-			ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
-
-			ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
+			ItemJoint.Point2 = new PhysicsPoint(
+				ItemJoint.Point2.Body,
+				WorldTransform.PointToLocal( HeldPoint.VisualPoint ),
+				WorldTransform.RotationToLocal( Rotation.FromToRotation( localForward, targetForward ) ) );
 		}
+		else
+		{
+			ItemJoint.Point2 = new PhysicsPoint(
+				ItemJoint.Point2.Body,
+				WorldTransform.PointToLocal( HeldPoint.VisualPoint ) );
+		}
+
+		ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
+		ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
 	}
 
 	RealTimeSince SearchDelay;
 	void Searching()
 	{
+		var ctrl = Controller;
+		if ( ctrl is null )
+			return;
+
 		if ( previousHandState != HandState.Searching )
 		{
 			Tags.Remove( "activehand" );
@@ -149,17 +190,17 @@ public sealed class VrhandInteraction : Component
 
 			closestPoint = gPoint;
 		}
-		
-		if (closestPoint.IsValid())
-			GrabPointSelection(closestPoint);
+
+		if ( closestPoint.IsValid() )
+			GrabPointSelection( closestPoint, ctrl );
 	}
 
-	void GrabPointSelection(GrabPoint closestPoint)
+	void GrabPointSelection( GrabPoint closestPoint, IControllerInput ctrl )
 	{
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.SolidSphere( closestPoint.VisualPoint, 0.5f );
 
-		if ( VRController.Grip > 0.5f )
+		if ( ctrl.Grip > 0.5f )
 			Grab( closestPoint );
 	}
 
@@ -167,33 +208,34 @@ public sealed class VrhandInteraction : Component
 	[Property] GrabPoint HeldPoint { get; set; }
 	void Holding()
 	{
+		var ctrl = Controller;
+		if ( ctrl is null )
+			return;
+
 		if ( dropped )
 			return;
 
-		if(VRController.Grip < 0.2f || (!HeldPoint.Main && !HeldPoint.MainPoint.Held) )
+		if ( ctrl.Grip < 0.2f || (!HeldPoint.Main && !HeldPoint.MainPoint.Held) )
 		{
 			Drop();
 			return;
 		}
 
-		if(HeldPoint.IsValid())
+		if ( HeldPoint.IsValid() )
 		{
 			var HeldPointSkeleton = Hand.Equals( HandEnum.Left ) ? HeldPoint.LeftHand : HeldPoint.RightHand;
 
 			AnimatedHand.Root.WorldPosition = HeldPointSkeleton.WorldPosition;
 			AnimatedHand.Root.WorldRotation = HeldPointSkeleton.WorldRotation;
 
-			CopyTransformRecursive( HeldPointSkeleton, AnimatedHand.Root, Vector3.One, new Angles(1,1,1) );
+			CopyTransformRecursive( HeldPointSkeleton, AnimatedHand.Root, Vector3.One, new Angles( 1, 1, 1 ) );
 
 			IKTarget.WorldPosition = AnimatedHand.Root.WorldPosition;
 			IKTarget.WorldRotation = AnimatedHand.Root.WorldRotation;
 
 			WorldPosition = HeldPoint.WorldPosition;
 			WorldRotation = HeldPoint.WorldRotation;
-			
 		}
-
-
 	}
 
 	public void Grab( GrabPoint point )
@@ -210,14 +252,12 @@ public sealed class VrhandInteraction : Component
 
 		HeldPoint.Body.GameObject.SetParent( GameObject.Parent );
 
-		var p1 = new PhysicsPoint( point.Body.PhysicsBody, point.Body.WorldTransform.PointToLocal( point.WorldPosition ), point.Body.WorldTransform.RotationToLocal( point.WorldRotation) );
+		var p1 = new PhysicsPoint( point.Body.PhysicsBody, point.Body.WorldTransform.PointToLocal( point.WorldPosition ), point.Body.WorldTransform.RotationToLocal( point.WorldRotation ) );
 		var p2 = new PhysicsPoint( JointPoint.PhysicsBody, Vector3.Zero );
 
 		ItemJoint = PhysicsJoint.CreateFixed( p1, p2 );
 		ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
 		ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
-
-		
 	}
 
 	bool dropped;
@@ -237,7 +277,7 @@ public sealed class VrhandInteraction : Component
 		dropped = true;
 	}
 
-	void Search(ref List<GrabPoint> GrabbablePoints, ref List<Interactable> InteractablePoints)
+	void Search( ref List<GrabPoint> GrabbablePoints, ref List<Interactable> InteractablePoints )
 	{
 		for ( int i = 0; i < 2; i++ )
 		{
@@ -267,7 +307,7 @@ public sealed class VrhandInteraction : Component
 				}
 				if ( g.Tags.Contains( "grabpoint" ) )
 				{
-					
+
 					var grabPoint = g.GetComponent<GrabPoint>();
 					if ( !grabPoint.IsValid() )
 						continue;
@@ -285,16 +325,25 @@ public sealed class VrhandInteraction : Component
 		}
 	}
 
-	void PositionHand()
+	/// <summary>
+	/// Keeps the (kinematic) JointPoint glued to the controller-tracked Reference
+	/// so that ItemJoint's anchor updates with the player's hand. Trace nudges
+	/// the anchor away from world geometry to stop held items penetrating walls.
+	/// </summary>
+	void PositionJointPoint()
 	{
+		if ( !Reference.IsValid() || !JointPoint.IsValid() )
+			return;
+
 		JointPoint.WorldRotation = Reference.WorldRotation;
 
 		var direction = Reference.WorldPosition - JointPoint.WorldPosition;
-		var trace = Scene.Trace.Ray( JointPoint.WorldPosition, Reference.WorldPosition + direction.Normal * 2 ).IgnoreGameObjectHierarchy( GameObject.Parent ).Run();
+		var trace = Scene.Trace.Ray( JointPoint.WorldPosition, Reference.WorldPosition + direction.Normal * 2 )
+			.IgnoreGameObjectHierarchy( GameObject.Parent ).Run();
 
-		JointPoint.WorldPosition = trace.Hit ?
-				trace.HitPosition - direction.Normal * 2 :
-				Reference.WorldPosition;
+		JointPoint.WorldPosition = trace.Hit
+			? trace.HitPosition - direction.Normal * 2
+			: Reference.WorldPosition;
 	}
 
 	public static void CopyTransformRecursive( GameObject target, GameObject set, Vector3 posMod, Angles angMod, float lerp = 1 )
@@ -307,9 +356,9 @@ public sealed class VrhandInteraction : Component
 			GameObject targetChild = target.Children[i];
 			GameObject setChild = set.Children[i];
 
-			setChild.LocalPosition = Vector3.Lerp( setChild.LocalPosition, targetChild.LocalPosition * posMod, lerp);
+			setChild.LocalPosition = Vector3.Lerp( setChild.LocalPosition, targetChild.LocalPosition * posMod, lerp );
 			Vector3 modifiedAngles = targetChild.LocalRotation.Angles().AsVector3() * angMod.AsVector3();
-			setChild.LocalRotation = Angles.Lerp( setChild.LocalRotation.Angles(), new Angles( modifiedAngles.x, modifiedAngles.y, modifiedAngles.z ), lerp);
+			setChild.LocalRotation = Angles.Lerp( setChild.LocalRotation.Angles(), new Angles( modifiedAngles.x, modifiedAngles.y, modifiedAngles.z ), lerp );
 			CopyTransformRecursive( targetChild, setChild, posMod, angMod, lerp );
 		}
 	}
@@ -325,8 +374,8 @@ public sealed class VrhandInteraction : Component
 			GameObject targetToChild = targetTo.Children[i];
 			GameObject setChild = set.Children[i];
 
-			setChild.LocalPosition = Vector3.Lerp( setChild.LocalPosition, Vector3.Lerp(targetFromChild.LocalPosition, targetToChild.LocalPosition, targetLerp) * posMod, lerp );
-			Vector3 modifiedAngles = Vector3.Lerp(targetFromChild.LocalRotation.Angles().AsVector3(), targetToChild.LocalRotation.Angles().AsVector3(), targetLerp) * angMod.AsVector3();
+			setChild.LocalPosition = Vector3.Lerp( setChild.LocalPosition, Vector3.Lerp( targetFromChild.LocalPosition, targetToChild.LocalPosition, targetLerp ) * posMod, lerp );
+			Vector3 modifiedAngles = Vector3.Lerp( targetFromChild.LocalRotation.Angles().AsVector3(), targetToChild.LocalRotation.Angles().AsVector3(), targetLerp ) * angMod.AsVector3();
 			setChild.LocalRotation = Angles.Lerp( setChild.LocalRotation.Angles(), new Angles( modifiedAngles.x, modifiedAngles.y, modifiedAngles.z ), lerp );
 			CopyTransformRecursiveLerp( targetFromChild, targetToChild, setChild, posMod, angMod, lerp );
 		}

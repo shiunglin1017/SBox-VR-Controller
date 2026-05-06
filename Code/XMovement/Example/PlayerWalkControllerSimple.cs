@@ -1,5 +1,7 @@
 ﻿using Sandbox;
 using Sandbox.Citizen;
+using TFT.VR.Abstractions;
+
 namespace XMovement;
 
 public partial class PlayerWalkControllerSimple : Component
@@ -44,9 +46,16 @@ public partial class PlayerWalkControllerSimple : Component
 	/// </summary>
 	public bool WantsJump { get; set; }
 
+	private IMovementInputSource _move;
+
+	protected override void OnAwake()
+	{
+		_move = Components.Get<IMovementInputSource>( FindMode.EverythingInSelfAndAncestors );
+	}
+
 	protected override void OnUpdate()
 	{
-		
+
 
 		base.OnUpdate();
 		Controller.CenterOffset = Head.LocalPosition.WithZ( 0 );
@@ -101,21 +110,25 @@ public partial class PlayerWalkControllerSimple : Component
 
 	private void BuildFrameInput()
 	{
-		if ( Input.VR == null )
+		if ( _move is null )
 			return;
 
-		if ( Input.VR.RightHand.ButtonA.IsPressed && !Input.VR.LeftHand.ButtonA.WasPressed ) WantsJump = true;
+		if ( _move.WantsJump )
+			WantsJump = true;
 	}
+
 	private void ResetFrameInput()
 	{
 		WantsJump = false;
 	}
+
 	private void BuildInput()
 	{
-		if ( Input.VR == null )
+		if ( _move is null )
 			return;
-		IsSlowWalking = !Input.VR.LeftHand.JoystickPress;
-		IsCrouching = Input.VR.RightHand.ButtonB || !CanUncrouch();
+
+		IsSlowWalking = _move.WantsSlowWalk;
+		IsCrouching = _move.WantsCrouch || !CanUncrouch();
 	}
 
 	protected float GetWishSpeed()
@@ -129,10 +142,7 @@ public partial class PlayerWalkControllerSimple : Component
 	{
 		var rot = Head.WorldRotation.Angles().WithPitch( 0f ).ToRotation();
 
-		var input = Input.AnalogMove;
-
-		if ( Input.VR != null && Input.VR.LeftHand.Joystick.Active )
-			input = new Vector3( Input.VR.LeftHand.Joystick.Value.y, -Input.VR.LeftHand.Joystick.Value.x, 0 );
+		var input = _move?.WishMove ?? Vector3.Zero;
 
 		var wishDirection = input.Normal * rot;
 		wishDirection = wishDirection.WithZ( 0 );
