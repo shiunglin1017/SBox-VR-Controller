@@ -23,6 +23,8 @@ namespace TFT.VR.Services;
 [Icon( "vrpano" )]
 public sealed class SandboxVRInputProvider : Component, IVRInputProvider
 {
+	[Property, Group( "Debug" )] public bool DebugLogs { get; set; }
+
 	/// <summary>
 	/// The <c>Sandbox.VR.VRAnchor</c> on the player. Disabled automatically on
 	/// proxies and outside VR runtime.
@@ -62,6 +64,11 @@ public sealed class SandboxVRInputProvider : Component, IVRInputProvider
 	{
 		var enable = !IsProxy && Game.IsRunningInVR;
 
+		if ( DebugLogs )
+		{
+			Log.Info( $"[VRProvider] go={GameObject?.Name} isProxy={IsProxy} runningVR={Game.IsRunningInVR} inputVR={(Input.VR != null)} enable={enable}" );
+		}
+
 		if ( Anchor.IsValid() )
 			Anchor.Enabled = enable;
 
@@ -72,7 +79,11 @@ public sealed class SandboxVRInputProvider : Component, IVRInputProvider
 		{
 			var t = ManagedTrackers[i];
 			if ( t.IsValid() )
+			{
 				t.Enabled = enable;
+				if ( DebugLogs )
+					Log.Info( $"[VRProvider] tracker[{i}] go={t.GameObject?.Name} enabled={t.Enabled} poseSource={t.PoseSource}" );
+			}
 		}
 	}
 }

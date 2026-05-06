@@ -17,12 +17,14 @@ namespace TFT.VR.Services;
 public sealed class SandboxVRHandTracker : Component, IHandTracker
 {
 	[Property] public HandSide Side { get; set; }
+	[Property, Group( "Debug" )] public bool DebugLogs { get; set; }
 
 	/// <summary>
 	/// The GameObject driven by <c>Sandbox.VR.VRTrackedObject</c>. Defaults to
 	/// this component's own GameObject when left blank.
 	/// </summary>
 	[Property] public GameObject Reference { get; set; }
+	private TimeUntil _nextDebugLog;
 
 	GameObject IHandTracker.ReferenceObject => ResolvedReference;
 
@@ -45,5 +47,15 @@ public sealed class SandboxVRHandTracker : Component, IHandTracker
 	protected override void OnValidate()
 	{
 		Reference ??= GameObject;
+	}
+
+	protected override void OnPreRender()
+	{
+		if ( !DebugLogs || _nextDebugLog > 0f )
+			return;
+
+		var refGo = ResolvedReference;
+		Log.Info( $"[VRHandTracker:{Side}] go={GameObject?.Name} ref={refGo?.Name} tracked={IsTracked} refValid={refGo.IsValid()} pos={Pose.Position}" );
+		_nextDebugLog = 0.5f;
 	}
 }

@@ -2,10 +2,12 @@ using Sandbox;
 using Sandbox.Citizen;
 using Sandbox.Physics;
 using System.Linq;
+using System.Collections.Generic;
 using TFT.VR.Abstractions;
 
 public sealed class VrhandInteraction : Component
 {
+	[Property, Group( "Debug" )] public bool DebugLogs { get; set; }
 	[Property] private HandEnum Hand { get; set; }
 	public enum HandEnum
 	{
@@ -49,6 +51,7 @@ public sealed class VrhandInteraction : Component
 	private Rigidbody Body { get; set; }
 	public Rigidbody JointPoint { get; set; }
 	private Sandbox.Physics.FixedJoint ItemJoint { get; set; }
+	private TimeUntil _nextDebugLog;
 
 	Vector3 targetPos;
 	Rotation targetRot;
@@ -56,8 +59,7 @@ public sealed class VrhandInteraction : Component
 	protected override void OnAwake()
 	{
 		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
-		_tracker = Components.GetAll<IHandTracker>( FindMode.EverythingInSelfAndAncestors )
-			.FirstOrDefault( t => t.Side == HandAsSide );
+		ResolveTracker();
 	}
 
 	protected override void OnStart()
@@ -88,8 +90,16 @@ public sealed class VrhandInteraction : Component
 
 	protected override void OnPreRender()
 	{
-		if ( IsProxy ) return;
-		if ( _input is null || !_input.IsAvailable ) return;
+		if ( IsProxy )
+		{
+			LogDebugOnce( "skip: is proxy" );
+			return;
+		}
+		if ( _input is null || !_input.IsAvailable )
+		{
+			LogDebugOnce( $"skip: provider unavailable (_input null={_input is null})" );
+			return;
+		}
 
 		PositionJointPoint();
 
@@ -102,6 +112,11 @@ public sealed class VrhandInteraction : Component
 			var pose = _tracker.Pose;
 			WorldPosition = pose.Position;
 			WorldRotation = pose.Rotation;
+			LogDebugOnce( $"tracking ok: state={CurrentHandState} pose={pose.Position}" );
+		}
+		else
+		{
+			LogDebugOnce( $"no tracking snap: state={CurrentHandState} trackerNull={_tracker is null} trackerTracked={_tracker?.IsTracked}" );
 		}
 
 		switch ( CurrentHandState )
@@ -379,6 +394,54 @@ public sealed class VrhandInteraction : Component
 			setChild.LocalRotation = Angles.Lerp( setChild.LocalRotation.Angles(), new Angles( modifiedAngles.x, modifiedAngles.y, modifiedAngles.z ), lerp );
 			CopyTransformRecursiveLerp( targetFromChild, targetToChild, setChild, posMod, angMod, lerp );
 		}
+	}
+
+	private void LogDebugOnce( string message )
+	{
+		if ( !DebugLogs || _nextDebugLog > 0f )
+			return;
+
+		Log.Info( $"[VrhandInteraction:{Hand}] go={GameObject?.Name} {message}" );
+		_nextDebugLog = 0.5f;
+	}
+
+	private void ResolveTracker()
+	{
+		// First try local hierarchy (cheap path).
+		_tracker = Components.GetAll<IHandTracker>( FindMode.EverythingInSelfAndAncestors )
+			.FirstOrDefault( t => t.Side == HandAsSide );
+
+		if ( _tracker is not null )
+			return;
+
+		// Fallback: hand refs are siblings under the same player root, so they are
+		// outside "self+ancestors". Search scene trackers and pick the one that
+		// belongs to the same root GameObject and matching side.
+		var myRoot = GetRoot( GameObject );
+		var allTrackers = Scene.GetAllComponents<IHandTracker>();
+		_tracker = allTrackers.FirstOrDefault( t =>
+		{
+			if ( t is null || t.Side != HandAsSide )
+				return false;
+
+			var refGo = t.ReferenceObject;
+			return refGo.IsValid() && GetRoot( refGo ) == myRoot;
+		} );
+
+		LogDebugOnce( _tracker is null
+			? "resolve tracker failed: no matching tracker found under same root"
+			: $"resolve tracker ok: side={_tracker.Side} trackerGo={_tracker.ReferenceObject?.Name}" );
+	}
+
+	private static GameObject GetRoot( GameObject go )
+	{
+		if ( !go.IsValid() )
+			return null;
+
+		var current = go;
+		while ( current.Parent.IsValid() )
+			current = current.Parent;
+		return current;
 	}
 
 }
