@@ -36,6 +36,7 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	// Resolved once via the player's SandboxVRInputProvider so that nothing in
 	// here ever has to read Input.VR / Game.IsRunningInVR directly.
 	private IVRInputProvider _input;
+	private IRigRebinder _rigRebinder;
 
 	GameObject _positionReference;
 	private GameObject PositionReference
@@ -226,7 +227,36 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		Camera.Enabled = !IsProxy;
 
 		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
+		_rigRebinder = Components.Get<IRigRebinder>( FindMode.EverythingInSelfAndAncestors );
 		_handsCache = new[] { LeftHand, RightHand };
+	}
+
+	[Button]
+	public async void RebindRig( string mappingProfileId = "default" )
+	{
+		if ( !Target.IsValid() || _rigRebinder is null )
+			return;
+
+		var leftPrev = LeftArmIK?.ikTarget?.WorldTransform ?? default;
+		var rightPrev = RightArmIK?.ikTarget?.WorldTransform ?? default;
+
+		// Let render/animation settle before rebinding references.
+		await Task.Frame();
+		_rigRebinder.TryRebindRig( Target, mappingProfileId );
+		await Task.Frame();
+
+		BlendHandTarget( LeftArmIK?.ikTarget, leftPrev, 0.15f );
+		BlendHandTarget( RightArmIK?.ikTarget, rightPrev, 0.15f );
+	}
+
+	private static void BlendHandTarget( GameObject target, Transform from, float duration )
+	{
+		if ( !target.IsValid() )
+			return;
+
+		var t = MathX.Clamp( Time.Delta / Math.Max( duration, 0.0001f ), 0f, 1f );
+		target.WorldPosition = Vector3.Lerp( from.Position, target.WorldPosition, t );
+		target.WorldRotation = Rotation.Slerp( from.Rotation, target.WorldRotation, t );
 	}
 
 	public static Angles ScaleAngles(Angles target, Angles by)

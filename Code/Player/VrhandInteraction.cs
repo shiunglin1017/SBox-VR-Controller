@@ -1,9 +1,11 @@
 using Sandbox;
 using Sandbox.Citizen;
 using Sandbox.Physics;
+using System;
 using System.Linq;
 using System.Collections.Generic;
 using TFT.VR.Abstractions;
+using TFT.VR.Logic;
 
 public sealed class VrhandInteraction : Component
 {
@@ -34,6 +36,10 @@ public sealed class VrhandInteraction : Component
 
 	private IVRInputProvider _input;
 	private IHandTracker _tracker;
+	private IGrabPoseResolver _grabPoseResolver;
+	private IHandPoseStabilizer _handPoseStabilizer;
+	private IThrowVelocityEstimator _throwVelocityEstimator;
+	private IWeightProfileProvider _weightProfileProvider;
 
 	public HandSide HandAsSide => Hand == HandEnum.Left ? HandSide.Left : HandSide.Right;
 
@@ -52,6 +58,16 @@ public sealed class VrhandInteraction : Component
 	public Rigidbody JointPoint { get; set; }
 	private Sandbox.Physics.FixedJoint ItemJoint { get; set; }
 	private TimeUntil _nextDebugLog;
+	private GrabWeightProfile _currentWeightProfile = GrabWeightProfile.Medium;
+	private Vector3 _releaseLinearVelocity;
+	private Vector3 _releaseAngularVelocity;
+	private Vector3 _lastReferencePos;
+
+	[Property, Group( "Grab Rules" )] private float GripPressThreshold { get; set; } = 0.5f;
+	[Property, Group( "Grab Rules" )] private float GripReleaseThreshold { get; set; } = 0.2f;
+	[Property, Group( "Throw" )] private bool UseThrowSignalEstimator { get; set; } = true;
+	[Property, Group( "Throw" )] private int ThrowSignalSampleCount { get; set; } = 12;
+	[Property, Group( "Throw" )] private int ThrowPeakNeighborhood { get; set; } = 2;
 
 	Vector3 targetPos;
 	Rotation targetRot;
@@ -60,6 +76,10 @@ public sealed class VrhandInteraction : Component
 	{
 		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
 		ResolveTracker();
+		_grabPoseResolver = Components.Get<IGrabPoseResolver>( FindMode.EverythingInSelfAndAncestors );
+		_handPoseStabilizer = Components.Get<IHandPoseStabilizer>( FindMode.EverythingInSelfAndAncestors );
+		_throwVelocityEstimator = Components.Get<IThrowVelocityEstimator>( FindMode.EverythingInSelfAndAncestors );
+		_weightProfileProvider = Components.Get<IWeightProfileProvider>( FindMode.EverythingInSelfAndAncestors );
 	}
 
 	protected override void OnStart()
@@ -84,6 +104,7 @@ public sealed class VrhandInteraction : Component
 
 		targetPos = IKTarget.LocalPosition;
 		targetRot = IKTarget.LocalRotation;
+		_lastReferencePos = Reference.IsValid() ? Reference.WorldPosition : WorldPosition;
 	}
 
 	HandState previousHandState;
@@ -99,6 +120,15 @@ public sealed class VrhandInteraction : Component
 		{
 			LogDebugOnce( $"skip: provider unavailable (_input null={_input is null})" );
 			return;
+		}
+
+		var ctrl = Controller;
+		if ( ctrl is not null && ctrl.IsTracked && Reference.IsValid() )
+		{
+			_releaseLinearVelocity = (Reference.WorldPosition - _lastReferencePos) / Math.Max( Time.Delta, 0.0001f );
+			_releaseAngularVelocity = Vector3.Zero;
+			_lastReferencePos = Reference.WorldPosition;
+			_throwVelocityEstimator?.PushSample( _releaseLinearVelocity, _releaseAngularVelocity, Math.Max( 1, ThrowSignalSampleCount ) );
 		}
 
 		PositionJointPoint();
@@ -161,8 +191,9 @@ public sealed class VrhandInteraction : Component
 				WorldTransform.PointToLocal( HeldPoint.VisualPoint ) );
 		}
 
-		ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
-		ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
+		var springScale = MathX.Clamp( _currentWeightProfile.FollowPositionLerp / 14f, 0.5f, 2f );
+		ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult * springScale, 5 );
+		ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult * springScale, 5 );
 	}
 
 	RealTimeSince SearchDelay;
@@ -215,7 +246,7 @@ public sealed class VrhandInteraction : Component
 		Gizmo.Draw.IgnoreDepth = true;
 		Gizmo.Draw.SolidSphere( closestPoint.VisualPoint, 0.5f );
 
-		if ( ctrl.Grip > 0.5f )
+		if ( GrabInteractionRules.ShouldStartGrab( ctrl.Grip, GripPressThreshold, HeldPoint.IsValid(), closestPoint.IsValid() ) )
 			Grab( closestPoint );
 	}
 
@@ -230,7 +261,8 @@ public sealed class VrhandInteraction : Component
 		if ( dropped )
 			return;
 
-		if ( ctrl.Grip < 0.2f || (!HeldPoint.Main && !HeldPoint.MainPoint.Held) )
+		if ( GrabInteractionRules.ShouldReleaseGrab( ctrl.Grip, GripReleaseThreshold, HeldPoint.IsValid() ) ||
+			(!HeldPoint.Main && !HeldPoint.MainPoint.Held) )
 		{
 			Drop();
 			return;
@@ -238,18 +270,28 @@ public sealed class VrhandInteraction : Component
 
 		if ( HeldPoint.IsValid() )
 		{
+			_currentWeightProfile = _weightProfileProvider?.ResolveProfile( HeldPoint, HeldPoint.RifleHold && HeldPoint.SecondaryPoint?.Held == true )
+				?? _currentWeightProfile;
+
 			var HeldPointSkeleton = Hand.Equals( HandEnum.Left ) ? HeldPoint.LeftHand : HeldPoint.RightHand;
+			if ( HeldPointSkeleton.IsValid() )
+			{
+				AnimatedHand.Root.WorldPosition = HeldPointSkeleton.WorldPosition;
+				AnimatedHand.Root.WorldRotation = HeldPointSkeleton.WorldRotation;
+				CopyTransformRecursive( HeldPointSkeleton, AnimatedHand.Root, Vector3.One, new Angles( 1, 1, 1 ) );
+			}
 
-			AnimatedHand.Root.WorldPosition = HeldPointSkeleton.WorldPosition;
-			AnimatedHand.Root.WorldRotation = HeldPointSkeleton.WorldRotation;
+			var targetPose = HeldPoint.WorldTransform;
+			if ( _grabPoseResolver is not null && _grabPoseResolver.TryResolvePose( HandAsSide, HeldPoint, out var resolvedPose ) )
+				targetPose = resolvedPose;
 
-			CopyTransformRecursive( HeldPointSkeleton, AnimatedHand.Root, Vector3.One, new Angles( 1, 1, 1 ) );
+			if ( _handPoseStabilizer is not null )
+				targetPose = _handPoseStabilizer.Stabilize( new Transform( WorldPosition, WorldRotation ), targetPose, _currentWeightProfile, Time.Delta );
 
-			IKTarget.WorldPosition = AnimatedHand.Root.WorldPosition;
-			IKTarget.WorldRotation = AnimatedHand.Root.WorldRotation;
-
-			WorldPosition = HeldPoint.WorldPosition;
-			WorldRotation = HeldPoint.WorldRotation;
+			IKTarget.WorldPosition = targetPose.Position;
+			IKTarget.WorldRotation = targetPose.Rotation;
+			WorldPosition = targetPose.Position;
+			WorldRotation = targetPose.Rotation;
 		}
 	}
 
@@ -265,19 +307,32 @@ public sealed class VrhandInteraction : Component
 		if ( !HeldPoint.Main )
 			return;
 
+		_currentWeightProfile = _weightProfileProvider?.ResolveProfile( HeldPoint, HeldPoint.RifleHold && HeldPoint.SecondaryPoint?.Held == true )
+			?? GrabWeightProfile.Medium;
+
 		HeldPoint.Body.GameObject.SetParent( GameObject.Parent );
 
 		var p1 = new PhysicsPoint( point.Body.PhysicsBody, point.Body.WorldTransform.PointToLocal( point.WorldPosition ), point.Body.WorldTransform.RotationToLocal( point.WorldRotation ) );
 		var p2 = new PhysicsPoint( JointPoint.PhysicsBody, Vector3.Zero );
 
 		ItemJoint = PhysicsJoint.CreateFixed( p1, p2 );
-		ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
-		ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult, 5 );
+		var springScale = MathX.Clamp( _currentWeightProfile.FollowPositionLerp / 14f, 0.5f, 2f );
+		ItemJoint.SpringLinear = new PhysicsSpring( 100 * HeldPoint.StrengthMult * springScale, 5 );
+		ItemJoint.SpringAngular = new PhysicsSpring( 100 * HeldPoint.StrengthMult * springScale, 5 );
 	}
 
 	bool dropped;
 	public void Drop()
 	{
+		if ( HeldPoint.IsValid() && HeldPoint.Main && HeldPoint.Body.IsValid() && UseThrowSignalEstimator && _throwVelocityEstimator is not null )
+		{
+			if ( _throwVelocityEstimator.TryEstimate( Math.Max( 0, ThrowPeakNeighborhood ), _currentWeightProfile, out var estLinear, out var estAngular ) )
+			{
+				HeldPoint.Body.Velocity = estLinear;
+				HeldPoint.Body.AngularVelocity = estAngular;
+			}
+		}
+
 		CurrentHandState = HandState.Searching;
 		HeldPoint.Held = false;
 		HeldPoint.GrabbedHand = null;
