@@ -11,6 +11,8 @@ public sealed class PistolSlide : Component
 	[Property] private ModelRenderer BulletVisual { get; set; }
 	[Property] private float Distance { get; set; }
 	[Property] private float BulletPickupPoint { get; set; } = 0.78f;
+	[Property, Group( "Haptics" )] public bool UseChamberHaptics { get; set; } = true;
+
 	float _pullBack;
 	[Property] public float PullBack
 	{
@@ -70,7 +72,9 @@ public sealed class PistolSlide : Component
 		if ( PullBack == 1 && MainGrabPoint.Held )
 		{
 			var controller = MainGrabPoint.GrabbedHand?.Controller;
-			if ( controller is not null && controller.IsTracked && controller.JoystickPress )
+			// Rising-edge via DigitalInput.WasPressed: only release the
+			// "stuck-back" state once per click, not every frame.
+			if ( controller is not null && controller.IsTracked && controller.JoystickPressed )
 			{
 				minPullBack = 0;
 			}
@@ -109,6 +113,8 @@ public sealed class PistolSlide : Component
 
 		if ( !MagazineLoader.Magazine.IsValid() || MagazineLoader.Magazine.Contents.Count <= 0 )
 			minPullBack = 1;
+
+		PulseChamberHaptic();
 	}
 
 	void ExitPullBack()
@@ -131,6 +137,23 @@ public sealed class PistolSlide : Component
 
 		Barrel.Contents = HoldingBullet;
 		HoldingBullet = -1;
+
+		PulseChamberHaptic();
 	}
 
+	void PulseChamberHaptic()
+	{
+		if ( !UseChamberHaptics )
+			return;
+
+		// Buzz both the slide hand and the main grip hand if both are held.
+		var slideController = GrabPoint?.GrabbedHand?.Controller;
+		var mainController = MainGrabPoint?.GrabbedHand?.Controller;
+
+		if ( slideController is not null && slideController.IsTracked )
+			slideController.TriggerHaptic( HapticEffect.HardImpact, 0.6f, 1f, 0.8f );
+
+		if ( mainController is not null && mainController.IsTracked && mainController != slideController )
+			mainController.TriggerHaptic( HapticEffect.SoftImpact, 0.6f, 1f, 0.6f );
+	}
 }

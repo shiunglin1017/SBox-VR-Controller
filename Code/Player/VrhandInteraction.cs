@@ -6,6 +6,7 @@ using System.Linq;
 using System.Collections.Generic;
 using TFT.VR.Abstractions;
 using TFT.VR.Logic;
+using TFT.VR.Services;
 
 public sealed class VrhandInteraction : Component
 {
@@ -69,6 +70,25 @@ public sealed class VrhandInteraction : Component
 	[Property, Group( "Throw" )] private int ThrowSignalSampleCount { get; set; } = 12;
 	[Property, Group( "Throw" )] private int ThrowPeakNeighborhood { get; set; } = 2;
 
+	/// <summary>
+	/// When true the hand body becomes dynamic and is held against the
+	/// tracker by an official <c>Sandbox.FixedJoint</c> with weight-class
+	/// driven frequencies. Heavy items will visibly drag the hand back; the
+	/// hand recovers as soon as the item is released. Off by default to
+	/// preserve the existing kinematic snap behaviour.
+	/// </summary>
+	[Property, Group( "Physical Hand" )] public bool UsePhysicalHand { get; set; } = false;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandLightFreq { get; set; } = 25f;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandLightAngFreq { get; set; } = 22f;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandMediumFreq { get; set; } = 14f;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandMediumAngFreq { get; set; } = 12f;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandHeavyFreq { get; set; } = 8f;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandHeavyAngFreq { get; set; } = 6f;
+	[Property, Group( "Physical Hand" )] public float PhysicalHandDamping { get; set; } = 0.7f;
+
+	private Sandbox.FixedJoint _handAnchorJoint;
+	private GrabWeightClass _appliedPhysicalHandClass = (GrabWeightClass)(-1);
+
 	Vector3 targetPos;
 	Rotation targetRot;
 
@@ -94,17 +114,68 @@ public sealed class VrhandInteraction : Component
 		JointPoint.GameObject.SetParent( GameObject.Parent );
 		JointPoint.MotionEnabled = false;
 
-		// Hand body is purely kinematic; we drive WorldPosition / WorldRotation
-		// directly each PreRender frame and let triggers / sphere casts do the
-		// rest of the work (no physics impulse on the hand itself).
 		if ( Body.IsValid() )
-			Body.MotionEnabled = false;
+		{
+			if ( UsePhysicalHand )
+			{
+				// Dynamic hand: an official Sandbox.FixedJoint pulls us
+				// toward the tracker pose with weight-tuned frequencies,
+				// instead of snapping every frame. Heavy items can drag the
+				// hand back via ItemJoint reaction forces (see Grab()).
+				Body.MotionEnabled = true;
+				CreatePhysicalHandAnchor();
+			}
+			else
+			{
+				// Hand body is purely kinematic; OnPreRender drives
+				// WorldPosition / WorldRotation directly.
+				Body.MotionEnabled = false;
+			}
+		}
 
 		CurrentHandState = HandState.Searching;
 
 		targetPos = IKTarget.LocalPosition;
 		targetRot = IKTarget.LocalRotation;
 		_lastReferencePos = Reference.IsValid() ? Reference.WorldPosition : WorldPosition;
+	}
+
+	private void CreatePhysicalHandAnchor()
+	{
+		if ( !UsePhysicalHand || !Reference.IsValid() || _handAnchorJoint.IsValid() )
+			return;
+
+		_handAnchorJoint = Components.Create<Sandbox.FixedJoint>();
+		_handAnchorJoint.Body = GameObject;
+		_handAnchorJoint.AnchorBody = Reference;
+		_handAnchorJoint.EnableCollision = false;
+
+		ApplyPhysicalHandFrequencies( _currentWeightProfile.WeightClass );
+	}
+
+	private void ApplyPhysicalHandFrequencies( GrabWeightClass weightClass )
+	{
+		if ( !_handAnchorJoint.IsValid() )
+			return;
+		if ( _appliedPhysicalHandClass == weightClass )
+			return;
+
+		float linear, angular;
+		switch ( weightClass )
+		{
+			case GrabWeightClass.Light:
+				linear = PhysicalHandLightFreq; angular = PhysicalHandLightAngFreq; break;
+			case GrabWeightClass.Heavy:
+				linear = PhysicalHandHeavyFreq; angular = PhysicalHandHeavyAngFreq; break;
+			default:
+				linear = PhysicalHandMediumFreq; angular = PhysicalHandMediumAngFreq; break;
+		}
+
+		_handAnchorJoint.LinearFrequency = linear;
+		_handAnchorJoint.LinearDamping = PhysicalHandDamping;
+		_handAnchorJoint.AngularFrequency = angular;
+		_handAnchorJoint.AngularDamping = PhysicalHandDamping;
+		_appliedPhysicalHandClass = weightClass;
 	}
 
 	HandState previousHandState;
@@ -135,14 +206,21 @@ public sealed class VrhandInteraction : Component
 
 		AnimatedHand.NoControl = !CurrentHandState.Equals( HandState.Searching );
 
-		if ( CurrentHandState == HandState.Searching && _tracker is { IsTracked: true } )
+		if ( !UsePhysicalHand && CurrentHandState == HandState.Searching && _tracker is { IsTracked: true } )
 		{
-			// Direct snap to the controller pose. No physics spring, so the
+			// Kinematic mode: snap directly to the controller pose so the
 			// hand keeps up with the headset frame-for-frame.
 			var pose = _tracker.Pose;
 			WorldPosition = pose.Position;
 			WorldRotation = pose.Rotation;
 			LogDebugOnce( $"tracking ok: state={CurrentHandState} pose={pose.Position}" );
+		}
+		else if ( UsePhysicalHand )
+		{
+			// Dynamic mode: the FixedJoint pulls us toward the tracker.
+			// Nothing to do here other than ensure the joint is configured;
+			// physics handles the lag / sway for free.
+			LogDebugOnce( $"physical hand active: weight={_currentWeightProfile.WeightClass}" );
 		}
 		else
 		{
@@ -214,6 +292,14 @@ public sealed class VrhandInteraction : Component
 
 		dropped = false;
 
+		// Holster pickup pass: if the hand is hovering a non-empty slot and
+		// the player presses grip, pull the item off the slot and grab it
+		// using the existing grab path (which reuses ItemJoint, weight
+		// profiles etc). We do this before the normal search so the player
+		// always wins the race against scenery picks at the same range.
+		if ( TryUnholsterFromNearbySlot( ctrl ) )
+			return;
+
 		List<GrabPoint> GrabbablePoints = new List<GrabPoint>();
 		List<Interactable> InteractablePoints = new List<Interactable>();
 
@@ -252,6 +338,12 @@ public sealed class VrhandInteraction : Component
 
 
 	[Property] GrabPoint HeldPoint { get; set; }
+
+	/// <summary>True when this hand currently holds a grab-point.</summary>
+	public bool IsHolding => HeldPoint.IsValid();
+
+	/// <summary>The current high-level state machine state.</summary>
+	public HandState State => CurrentHandState;
 	void Holding()
 	{
 		var ctrl = Controller;
@@ -264,7 +356,12 @@ public sealed class VrhandInteraction : Component
 		if ( GrabInteractionRules.ShouldReleaseGrab( ctrl.Grip, GripReleaseThreshold, HeldPoint.IsValid() ) ||
 			(!HeldPoint.Main && !HeldPoint.MainPoint.Held) )
 		{
-			Drop();
+			// If we're letting go right next to an empty accepting slot,
+			// holster the held item instead of throwing it away. The slot
+			// itself decides rigid vs spring physics. If no slot is in
+			// range we fall through to the regular drop / throw path.
+			if ( !TryHolsterIntoNearbySlot() )
+				Drop();
 			return;
 		}
 
@@ -272,6 +369,8 @@ public sealed class VrhandInteraction : Component
 		{
 			_currentWeightProfile = _weightProfileProvider?.ResolveProfile( HeldPoint, HeldPoint.RifleHold && HeldPoint.SecondaryPoint?.Held == true )
 				?? _currentWeightProfile;
+
+			ApplyPhysicalHandFrequencies( _currentWeightProfile.WeightClass );
 
 			var HeldPointSkeleton = Hand.Equals( HandEnum.Left ) ? HeldPoint.LeftHand : HeldPoint.RightHand;
 			if ( HeldPointSkeleton.IsValid() )
@@ -313,7 +412,12 @@ public sealed class VrhandInteraction : Component
 		HeldPoint.Body.GameObject.SetParent( GameObject.Parent );
 
 		var p1 = new PhysicsPoint( point.Body.PhysicsBody, point.Body.WorldTransform.PointToLocal( point.WorldPosition ), point.Body.WorldTransform.RotationToLocal( point.WorldRotation ) );
-		var p2 = new PhysicsPoint( JointPoint.PhysicsBody, Vector3.Zero );
+
+		// In physical-hand mode anchor the spring directly to the dynamic
+		// hand body so heavy items can pull the hand back; otherwise stick
+		// with the kinematic JointPoint which is glued to the tracker.
+		var anchorBody = (UsePhysicalHand && Body.IsValid()) ? Body.PhysicsBody : JointPoint.PhysicsBody;
+		var p2 = new PhysicsPoint( anchorBody, Vector3.Zero );
 
 		ItemJoint = PhysicsJoint.CreateFixed( p1, p2 );
 		var springScale = MathX.Clamp( _currentWeightProfile.FollowPositionLerp / 14f, 0.5f, 2f );
@@ -344,6 +448,10 @@ public sealed class VrhandInteraction : Component
 		ItemJoint?.Remove();
 		ItemJoint = null;
 
+		// Free hand -> stiffest spring so the hand snaps back to tracker.
+		_currentWeightProfile = GrabWeightProfile.Light;
+		ApplyPhysicalHandFrequencies( GrabWeightClass.Light );
+
 		dropped = true;
 	}
 
@@ -354,7 +462,27 @@ public sealed class VrhandInteraction : Component
 			Vector3 searchPos = WorldPosition;
 			if ( i > 0 )
 			{
-				var ray = Scene.Trace.Ray( AnimatedHand.Root.WorldPosition, AnimatedHand.Root.WorldPosition + AnimatedHand.Root.WorldTransform.Forward * SearchDistance ).Radius( SearchRadius ).WithoutTags( "uninteractable" ).Run();
+				// SteamVR's "aim pose" represents where the controller is
+				// pointed (vs the grip pose, which is where it's held). Use it
+				// for the search ray so picking targets feels natural - the
+				// hand-root forward is only a fallback when AimPose isn't
+				// available (e.g. hand-tracking degraded modes).
+				var ctrl = Controller;
+				Vector3 rayOrigin;
+				Vector3 rayForward;
+				if ( ctrl is not null && ctrl.IsTracked )
+				{
+					var aim = ctrl.AimPose;
+					rayOrigin = aim.Position;
+					rayForward = aim.Forward;
+				}
+				else
+				{
+					rayOrigin = AnimatedHand.Root.WorldPosition;
+					rayForward = AnimatedHand.Root.WorldTransform.Forward;
+				}
+
+				var ray = Scene.Trace.Ray( rayOrigin, rayOrigin + rayForward * SearchDistance ).Radius( SearchRadius ).WithoutTags( "uninteractable" ).Run();
 				if ( ray.Hit ) searchPos = ray.HitPosition;
 			}
 			IEnumerable<GameObject> gameObjects = Scene.FindInPhysics( new Sphere( searchPos, SearchRadius ) );
@@ -497,6 +625,94 @@ public sealed class VrhandInteraction : Component
 		while ( current.Parent.IsValid() )
 			current = current.Parent;
 		return current;
+	}
+
+	/// <summary>
+	/// Searches every <see cref="VRHolsterSlot"/> in the scene; if the hand
+	/// is inside one's <c>ProximityRadius</c>, contains an item, and grip is
+	/// past the press threshold, unholsters the item and routes through the
+	/// regular <see cref="Grab"/> path. Returns true on a successful pull.
+	/// </summary>
+	bool TryUnholsterFromNearbySlot( IControllerInput ctrl )
+	{
+		if ( ctrl is null || !ctrl.IsTracked )
+			return false;
+		if ( ctrl.Grip <= GripPressThreshold )
+			return false;
+
+		foreach ( var slot in Scene.GetAllComponents<VRHolsterSlot>() )
+		{
+			if ( slot is null || !slot.ContainsItem )
+				continue;
+			if ( Vector3.DistanceBetween( WorldPosition, slot.SlotWorldPosition ) > slot.ProximityRadius )
+				continue;
+
+			if ( !slot.TryUnholster( out var item ) )
+				continue;
+			if ( !item.IsValid() || item.GrabPoints is null || item.GrabPoints.Count == 0 )
+				return false;
+
+			// Pick the first valid main grab-point; fall back to slot[0] if
+			// nothing else looks usable (matches existing search semantics).
+			GrabPoint target = null;
+			for ( int i = 0; i < item.GrabPoints.Count; i++ )
+			{
+				if ( item.GrabPoints[i].IsValid() && item.GrabPoints[i].Main )
+				{
+					target = item.GrabPoints[i];
+					break;
+				}
+			}
+			target ??= item.GrabPoints[0];
+			Grab( target );
+			return true;
+		}
+
+		return false;
+	}
+
+	/// <summary>
+	/// Looks for the closest empty <see cref="VRHolsterSlot"/> that accepts
+	/// the held item and tries to slot the item into it. Returns true when
+	/// a holster occurred (and <see cref="Drop"/> has already been called),
+	/// false when no slot was in range so the caller should run the normal
+	/// drop / throw path.
+	/// </summary>
+	bool TryHolsterIntoNearbySlot()
+	{
+		if ( !HeldPoint.IsValid() )
+			return false;
+
+		var item = HeldPoint.GameObject.Components.Get<Item>( FindMode.EverythingInSelfAndAncestors );
+		if ( !item.IsValid() )
+			return false;
+
+		VRHolsterSlot best = null;
+		float bestDistance = float.MaxValue;
+
+		foreach ( var slot in Scene.GetAllComponents<VRHolsterSlot>() )
+		{
+			if ( slot is null || !slot.CanAccept( item ) )
+				continue;
+
+			var d = Vector3.DistanceBetween( WorldPosition, slot.SlotWorldPosition );
+			if ( d > slot.ProximityRadius )
+				continue;
+			if ( d >= bestDistance )
+				continue;
+
+			best = slot;
+			bestDistance = d;
+		}
+
+		if ( best is null )
+			return false;
+
+		// Drop drops the joint + clears HeldPoint, but the body itself stays
+		// in the scene; we then immediately ask the slot to attach it. This
+		// avoids the body falling for one frame between drop and holster.
+		Drop();
+		return best.TryHolster( item );
 	}
 
 }

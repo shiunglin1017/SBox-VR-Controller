@@ -33,10 +33,12 @@ that consumers (hand-tracking, animation, weapons, locomotion) never touch
 | Interface | File | Purpose |
 | --- | --- | --- |
 | `IVRInputProvider` | [`Code/Player/Abstractions/IVRInputProvider.cs`](../Code/Player/Abstractions/IVRInputProvider.cs) | Per-player VR root. Exposes `IsAvailable` + `LeftHand`/`RightHand`. |
-| `IControllerInput` | [`Code/Player/Abstractions/IControllerInput.cs`](../Code/Player/Abstractions/IControllerInput.cs) | Single-controller snapshot (buttons, sticks, fingers, haptics). |
+| `IControllerInput` | [`Code/Player/Abstractions/IControllerInput.cs`](../Code/Player/Abstractions/IControllerInput.cs) | Single-controller snapshot (buttons, sticks, fingers, **`AimPose`**, **`IsHandTracking`**, **`*Delta`**, **`*Active`**, **`HapticEffect`-based haptics**). |
 | `IHandTracker` | [`Code/Player/Abstractions/IHandTracker.cs`](../Code/Player/Abstractions/IHandTracker.cs) | World pose of a tracked hand reference GameObject. |
+| `IHandSkeletonProvider` | [`Code/Player/Abstractions/IHandSkeletonProvider.cs`](../Code/Player/Abstractions/IHandSkeletonProvider.cs) | Cached `Sandbox.VR.VRHandJointData` lists (controller / hand motion ranges) for skeletal-mode finger animation. |
 | `IMovementInputSource` | [`Code/Player/Abstractions/IMovementInputSource.cs`](../Code/Player/Abstractions/IMovementInputSource.cs) | Locomotion intent: `WishMove` / `WantsJump` / `WantsCrouch` / `WantsSlowWalk`. |
 | `HandSide` enum | [`Code/Player/Abstractions/HandSide.cs`](../Code/Player/Abstractions/HandSide.cs) | New canonical Left/Right enum. |
+| `VRFingerKind` enum | [`Code/Player/Abstractions/IControllerInput.cs`](../Code/Player/Abstractions/IControllerInput.cs) | Mirror of `Sandbox.VR.FingerValue` (curl 0..4 / splay 10..13). Avoids forcing consumers to take a direct dependency on `Sandbox.VR`. |
 
 ## Service implementations
 
@@ -45,12 +47,15 @@ All under `TFT.VR.Services` in [`Code/Player/Services/`](../Code/Player/Services
 | Type | Implements | Notes |
 | --- | --- | --- |
 | `SandboxVRInputProvider` | `IVRInputProvider` | One per player root. Owns the `VRAnchor` reference and the 3 `VRTrackedObject` components, disabling them on proxies / outside VR. |
-| `VRControllerAdapter` | `IControllerInput` (internal) | Pass-through wrapper over `Sandbox.VR.VRController`. |
-| `NullController` | `IControllerInput` (internal) | Returned by the provider whenever `IsAvailable` is `false`. Eliminates null checks. |
+| `VRControllerAdapter` | `IControllerInput` (internal) | Pass-through wrapper over `Sandbox.VR.VRController`. Forwards `AnalogInput.Value/.Delta/.Active`, `DigitalInput.IsPressed/.WasPressed/.Active`, `AimTransform`, `IsHandTracked`, `GetFingerSplay/Value`, and `TriggerHaptics` directly. |
+| `NullController` | `IControllerInput` | Returned by the provider whenever `IsAvailable` is `false`. Eliminates null checks. Public so unit tests can pin defaults. |
 | `SandboxVRHandTracker` | `IHandTracker` | Sits on `HandLRef` / `HandRRef`. Reports pose from the GameObject driven by `Sandbox.VR.VRTrackedObject`. |
+| `SandboxVRHandSkeletonProvider` | `IHandSkeletonProvider` | Caches `Controller.GetJoints(MotionRange.Controller)` and `MotionRange.Hand` once per `OnUpdate`, exposes them as `IReadOnlyList<VRHandJointData>` so `VRAnimationHelper` can animate the hand bones from real OpenXR joints. |
 | `VRMovementInputSource` | `IMovementInputSource` | Translates `IControllerInput` (left stick / right A / right B / left stick press) into movement intent. |
 | `KeyboardMovementInputSource` | `IMovementInputSource` | Reads `Input.AnalogMove`, `Input.Pressed("Jump")`, etc. for non-VR play. |
 | `CompositeMovementInputSource` | `IMovementInputSource` | Picks VR vs. keyboard at runtime via `Game.IsRunningInVR`. |
+| `OfficialHandToggle` | (none) | Visibility router: shows the official `Sandbox.VR.VRHand` / `VRModelRenderer` child while the hand is empty + (optionally) hand-tracked, hides it once we're holding something. |
+| `VRHolsterSlot` | (none) | Wraps a single ModelDoc attachment as a holster. `TryHolster` either parents the body rigidly or attaches it via an official `Sandbox.FixedJoint` so gravity + swing remain. |
 
 ## Resolution rule
 

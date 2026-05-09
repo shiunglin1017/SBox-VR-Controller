@@ -4,9 +4,11 @@ using TFT.VR.Abstractions;
 public sealed class RecoilTest : Component
 {
 	[Property] private GameObject Barrel { get; set; }
+	[Property, Group( "Haptics" )] public bool UseFireHaptics { get; set; } = true;
 
 	private IVRInputProvider _input;
-	float lastTrigger;
+
+	const float FireThreshold = 0.75f;
 
 	protected override void OnAwake()
 	{
@@ -18,13 +20,19 @@ public sealed class RecoilTest : Component
 		if ( _input is null || !_input.IsAvailable )
 			return;
 
-		var trigger = _input.RightHand.Trigger;
+		var hand = _input.RightHand;
+		var trigger = hand.Trigger;
 
-		if ( trigger > 0.75f && lastTrigger <= 0.75f )
+		// Rising-edge detection via AnalogInput.Delta - no manually-tracked
+		// previous-frame field.
+		var previous = trigger - hand.TriggerDelta;
+		if ( trigger > FireThreshold && previous <= FireThreshold )
 		{
 			GetComponent<Rigidbody>().ApplyImpulseAt( Barrel.WorldPosition, -WorldTransform.Forward * 5000 );
 			Gizmo.Draw.Arrow( WorldPosition, WorldPosition + WorldTransform.Forward * 20 );
+
+			if ( UseFireHaptics )
+				hand.TriggerHaptic( HapticEffect.HardImpact );
 		}
-		lastTrigger = trigger;
 	}
 }

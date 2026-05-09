@@ -5,6 +5,10 @@ using System.Numerics;
 using TFT.VR.Abstractions;
 using static Sandbox.Citizen.VRAnimationHelper;
 
+// NOTE: We deliberately do NOT add `using Sandbox.VR;` here. The nested
+// VRAnimationHelper.VRHand class collides with Sandbox.VR.VRHand, so any
+// reference into Sandbox.VR uses fully-qualified names.
+
 namespace Sandbox.Citizen;
 
 [Title( "VR Animation Helper" )]
@@ -37,6 +41,12 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	// here ever has to read Input.VR / Game.IsRunningInVR directly.
 	private IVRInputProvider _input;
 	private IRigRebinder _rigRebinder;
+
+	// Per-hand skeletal providers (slot 0 = Left, slot 1 = Right). Same shape
+	// as _handsCache so we can iterate both arrays by index without a side
+	// lookup. Either slot may be null when no provider is configured for that
+	// hand, in which case we fall straight back to the Bend lerp path.
+	private IHandSkeletonProvider[] _skeletonsCache;
 
 	GameObject _positionReference;
 	private GameObject PositionReference
@@ -74,6 +84,23 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		[Hide] public List<VRFinger> Fingers => new List<VRFinger> { Thumb, Index, Middle, Ring, Pinkie };
 
 		public bool Invert { get; set; }
+
+		/// <summary>
+		/// When true and an <see cref="IHandSkeletonProvider"/> is producing
+		/// data, the hand bones in <see cref="JointBones"/> are driven from
+		/// the SteamVR / OpenXR joint stream instead of being lerped between
+		/// open/closed by <see cref="BendFingers"/>. Disable to fall back to
+		/// the curl-based animation (default).
+		/// </summary>
+		[Property] public bool UseSkeletalJoints { get; set; } = false;
+
+		/// <summary>
+		/// Maps an <see cref="Sandbox.VR.VRHandJoint"/> (Wrist / Palm /
+		/// ThumbProximal / ...) onto a bone GameObject in the rigged hand
+		/// model. Joints absent from this dictionary are skipped, so partial
+		/// bindings are valid.
+		/// </summary>
+		[Property] public Dictionary<Sandbox.VR.VRHandJoint, GameObject> JointBones { get; set; }
 
 		[Range( 0, 1 )]
 		public float Bend
@@ -229,6 +256,16 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		_input = Components.Get<IVRInputProvider>( FindMode.EverythingInSelfAndAncestors );
 		_rigRebinder = Components.Get<IRigRebinder>( FindMode.EverythingInSelfAndAncestors );
 		_handsCache = new[] { LeftHand, RightHand };
+
+		IHandSkeletonProvider left = null;
+		IHandSkeletonProvider right = null;
+		foreach ( var provider in Components.GetAll<IHandSkeletonProvider>( FindMode.EverythingInSelfAndAncestors ) )
+		{
+			if ( provider is null ) continue;
+			if ( provider.Side == HandSide.Left  && left  is null ) left  = provider;
+			if ( provider.Side == HandSide.Right && right is null ) right = provider;
+		}
+		_skeletonsCache = new[] { left, right };
 	}
 
 	[Button]
@@ -522,7 +559,40 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 			var hand = _handsCache[i];
 			if ( hand is null || hand.NoControl )
 				continue;
+
+			var skeleton = _skeletonsCache != null && i < _skeletonsCache.Length ? _skeletonsCache[i] : null;
+			if ( hand.UseSkeletalJoints && skeleton is { HasSkeleton: true } && skeleton.Joints.Count > 0 )
+			{
+				ApplySkeletalJoints( hand, skeleton.Joints );
+				continue;
+			}
+
 			hand.BendFingers();
+		}
+	}
+
+	/// <summary>
+	/// Drives the bones bound in <see cref="VRHand.JointBones"/> from the
+	/// per-frame <see cref="Sandbox.VR.VRHandJointData"/> snapshot. Each joint
+	/// transform is treated as world-space (matching what
+	/// <c>VRController.GetJoints</c> returns), so we set the bone's
+	/// <c>WorldTransform</c> directly. Joints not present in the dictionary
+	/// are silently skipped, allowing partial rigs.
+	/// </summary>
+	private static void ApplySkeletalJoints( VRHand hand, IReadOnlyList<Sandbox.VR.VRHandJointData> joints )
+	{
+		if ( hand.JointBones is null || hand.JointBones.Count == 0 )
+			return;
+
+		for ( int j = 0; j < joints.Count; j++ )
+		{
+			var data = joints[j];
+			if ( !hand.JointBones.TryGetValue( data.Joint, out var bone ) )
+				continue;
+			if ( !bone.IsValid() )
+				continue;
+
+			bone.WorldTransform = data.Transform;
 		}
 	}
 

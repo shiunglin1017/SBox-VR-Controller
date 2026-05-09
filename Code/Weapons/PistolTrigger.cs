@@ -15,7 +15,11 @@ public sealed class PistolTrigger : Component
 	[Property] public Angles StartRot { get; set; }
 	[Property] public Angles DownRot { get; set; }
 
-	float lastPullBack;
+	[Property, Group( "Haptics" )] public bool UseFireHaptics { get; set; } = true;
+	[Property, Group( "Haptics" )] public float FireHapticAmplitude { get; set; } = 1f;
+	[Property, Group( "Haptics" )] public float FireHapticLength { get; set; } = 1f;
+
+	const float FireThreshold = 0.9f;
 
 	protected override void OnUpdate()
 	{
@@ -33,10 +37,20 @@ public sealed class PistolTrigger : Component
 
 		LocalRotation = Angles.Lerp( StartRot, DownRot, controller.Trigger );
 
-		if ( controller.Trigger >= 0.9f && (lastPullBack < 0.9f || RapidFire) && Slide.visualPullBack == 0 )
+		// Rising-edge detection via official AnalogInput.Delta. The previous
+		// frame's value is reconstructed as (Value - Delta), so this is the
+		// direct equivalent of the old "lastPullBack < 0.9 && Trigger >= 0.9"
+		// check without needing a manually-tracked field.
+		var previousTrigger = controller.Trigger - controller.TriggerDelta;
+		var crossedFireEdge = controller.Trigger >= FireThreshold && previousTrigger < FireThreshold;
+
+		if ( (crossedFireEdge || (RapidFire && controller.Trigger >= FireThreshold)) && Slide.visualPullBack == 0 )
+		{
 			Barrel.TryFire();
 
-		lastPullBack = controller.Trigger;
+			if ( UseFireHaptics )
+				controller.TriggerHaptic( HapticEffect.HardImpact, FireHapticLength, 1f, FireHapticAmplitude );
+		}
 	}
 
 	void OffTriggerPose()

@@ -10,6 +10,7 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 	[Property] public List<string> AcceptedMags { get; set; }
 	[Property] public bool PickupMag { get; set; }
 	[Property] public float MagTime { get; set; } = 0.1f;
+	[Property, Group( "Haptics" )] public bool UseInsertHaptics { get; set; } = true;
 
 	public void OnTriggerEnter( Collider other )
 	{
@@ -33,6 +34,10 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 		if ( !magazine.IsValid() )
 			return;
 
+		// Pulse the hand that was holding the magazine before we drop it.
+		if ( UseInsertHaptics )
+			PulseHapticForGrabPoints( item.GrabPoints, HapticEffect.SoftImpact );
+
 		foreach ( GrabPoint grabPoint in item.GrabPoints )
 		{
 			grabPoint.GrabbedHand.Drop();
@@ -50,6 +55,14 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 
 		if ( !PickupMag )
 			other.Tags.Add( "uninteractable" );
+
+		// Click for the gun-holding hand once the mag fully seats.
+		if ( UseInsertHaptics && GrabPoint.IsValid() && GrabPoint.Held )
+		{
+			var holdingController = GrabPoint.GrabbedHand?.Controller;
+			if ( holdingController is not null && holdingController.IsTracked )
+				holdingController.TriggerHaptic( HapticEffect.SoftImpact, 0.6f, 1f, 0.6f );
+		}
 
 		SlideT = 0;
 
@@ -98,10 +111,28 @@ public sealed class MagazineLoader : Component, Component.ITriggerListener
 		Magazine.LocalPosition = Vector3.Lerp( MagDrop.LocalPosition, Vector3.Zero, lerp );
 
 		var controller = GrabPoint.GrabbedHand?.Controller;
-		if ( controller is not null && controller.IsTracked && controller.ButtonB )
+		// Rising-edge via DigitalInput.WasPressed: avoid re-triggering Dropping
+		// every frame the user holds B.
+		if ( controller is not null && controller.IsTracked && controller.ButtonBPressed )
 		{
 			Dropping = true;
 			SlideT = 0;
+
+			if ( UseInsertHaptics )
+				controller.TriggerHaptic( HapticEffect.SoftImpact, 0.5f, 1f, 0.5f );
+		}
+	}
+
+	private static void PulseHapticForGrabPoints( System.Collections.Generic.IList<GrabPoint> points, HapticEffect effect )
+	{
+		if ( points is null )
+			return;
+
+		for ( int i = 0; i < points.Count; i++ )
+		{
+			var ctrl = points[i]?.GrabbedHand?.Controller;
+			if ( ctrl is not null && ctrl.IsTracked )
+				ctrl.TriggerHaptic( effect, 0.6f, 1f, 0.7f );
 		}
 	}
 }
