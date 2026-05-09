@@ -9,6 +9,16 @@ that consumers (hand-tracking, animation, weapons, locomotion) never touch
 - Zero per-frame allocations on the VR-input path.
 - A clean keyboard fallback so the project is playable without a headset.
 
+> 相關後續遷移文件：
+> - [`VR_OFFICIAL_API_INTEGRATION.md`](VR_OFFICIAL_API_INTEGRATION.md)
+>   `2026-05-08` 把 input / haptic / hand-tracking / holster 對齊 `Sandbox.VR.*`
+>   與 `Sandbox.FixedJoint`。
+> - [`VR_OFFICIAL_IK_MIGRATION.md`](VR_OFFICIAL_IK_MIGRATION.md)
+>   `2026-05-09` 把手臂 IK 從 EasyIK 改成 `SkinnedModelRenderer.SetIk`，
+>   與腳部一致。
+> - [`MODEL_AUTHORING_GUIDE.md`](MODEL_AUTHORING_GUIDE.md)
+>   外來模型 / FBX 的交付與設定建議。
+
 ## Layers
 
 ```

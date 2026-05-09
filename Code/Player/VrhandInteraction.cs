@@ -26,7 +26,6 @@ public sealed class VrhandInteraction : Component
 	[Property] private float SearchRadius { get; set; } = 5f;
 	[Property] private float SearchDistance { get; set; } = 200f;
 	[Property] private float StrengthModifier { get; set; } = 1f;
-	[Property] private EasyIK IK { get; set; }
 
 	public enum HandState
 	{

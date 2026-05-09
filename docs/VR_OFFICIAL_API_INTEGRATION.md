@@ -13,6 +13,10 @@ Everything goes through the existing DI layer
 ([`docs/VR_DI_ARCHITECTURE.md`](VR_DI_ARCHITECTURE.md)). No consumer reads
 `Input.VR` directly.
 
+> **`2026-05-09` 後續遷移**：手臂 IK 也跟腳一樣改成走 `SkinnedModelRenderer.SetIk`，
+> 細節見 [`VR_OFFICIAL_IK_MIGRATION.md`](VR_OFFICIAL_IK_MIGRATION.md)。
+> 外來模型的交付規格集中在 [`MODEL_AUTHORING_GUIDE.md`](MODEL_AUTHORING_GUIDE.md)。
+
 ---
 
 ## 中文速查（zh-TW）

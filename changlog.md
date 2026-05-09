@@ -1,5 +1,108 @@
 # Changelog
 
+## 2026-05-09 - Official Arm IK Migration（第二階段：乾淨移除 EasyIK）
+
+> 文件：[`docs/VR_OFFICIAL_IK_MIGRATION.md`](docs/VR_OFFICIAL_IK_MIGRATION.md)（§ 第二階段：乾淨移除 EasyIK）
+
+### 重點
+
+- 在第一階段 `UseOfficialIK` toggle 已驗證可用的前提下，把 EasyIK 完全從程式碼移除。
+- 手臂 IK 從此**只有**官方 `SkinnedModelRenderer.SetIk("hand_left"/"hand_right", ...)` 一條路徑，與腳部一致。
+- 唯一還剩的人工動作是在 s&box 編輯器內把 `Assets/prefabs/Player.prefab` 上 14 處殘存的 EasyIK / Hint 參考清掉（步驟見 [`docs/VR_OFFICIAL_IK_MIGRATION.md`](docs/VR_OFFICIAL_IK_MIGRATION.md) § Player.prefab 手動清理）。
+
+### 程式
+
+- [`Code/Player/VRAnimationHelper.cs`](Code/Player/VRAnimationHelper.cs)：
+  - 移除 `[Property] EasyIK LeftArmIK / RightArmIK`。
+  - 移除 `[Property] bool UseOfficialIK`，`OnUpdate` 直接呼叫 `ApplyOfficialArmIk()`。
+  - 移除 `[Property] GameObject LeftHint / LeftHintAnchor / RightHint / RightHintAnchor`、`[Property] float InfluenceVelocity / InfluenceSmoothness`、私有欄位 `leftHintLerp / rightHintLerp`。
+  - 移除 `private void SnapHands()`、`private void AdjustHints()`、`async void UpdateArms()`、`bool updatingArms`。
+  - `RebindRig()` 改成讀 `TargetHandLeft / TargetHandRight` 自己的 transform，不再依賴 `LeftArmIK?.ikTarget`。
+  - `MoveShoulders.ResolveChainLength` 改成直接回 `MathF.Max( ArmLength, 0.01f )`。
+  - `MatchHeight` 不再呼叫 `UpdateArms`，純粹更新 `Height`，並在 `Target` / `Head` 不可用時提前 return。
+- [`Code/Player/VrhandInteraction.cs`](Code/Player/VrhandInteraction.cs) line 29：刪除未被使用的 `[Property] private EasyIK IK { get; set; }`。
+
+### 檔案
+
+- 整個 `Code/EasyIK/` 資料夾已刪除（包含 `Assets/Scripts/EasyIK.cs`，11.4 KB）。
+- prefab 內 EasyIK 序列化資料保留（手動清理）；`__type: EasyIK` 在編輯器會被視為 missing component，但因 `VRAnimationHelper` 與 `VrhandInteraction` 已不再宣告對應屬性，runtime 不會出錯。
+
+### 文件
+
+- [`docs/VR_OFFICIAL_IK_MIGRATION.md`](docs/VR_OFFICIAL_IK_MIGRATION.md) 大幅更新：
+  - 開頭新增「目前進度」block 說明唯一剩下的工作就是 prefab 手動清理。
+  - § 第二階段改寫成「已完成 / 唯一還剩 prefab 編輯器步驟」的形式，附完整 14 點 prefab 清理流程。
+- [`docs/VR_DI_ARCHITECTURE.md`](docs/VR_DI_ARCHITECTURE.md) 開頭已連到本文件（第一階段已加，這裡保持）。
+
+### 驗證
+
+- `dotnet test` 31 通過 / 0 失敗（`OfficialIkArmsTests` × 5 持續守住路由邏輯）。
+- 編譯零錯誤；無新 warning（既有 warning 與本次變更無關）。
+
+### 後續手動工作（user must do in editor）
+
+打開 `Assets/prefabs/Player.prefab` 在 s&box 編輯器內：
+
+1. `VRAnimationHelper` GameObject 上清掉 missing 欄位：`Left Arm IK / Right Arm IK / Left Hint / Left Hint Anchor / Right Hint / Right Hint Anchor`。
+2. 刪除 `LeftHintHandInfluence` / `RightHintHandInfluence` GameObject。
+3. 刪除原本掛 `EasyIK` component 的 `LeftArmIK` / `RightArmIK` GameObject。
+4. 兩個 `VrhandInteraction`（`HandLRef` / `HandRRef`）清掉 missing 的 `IK` 欄位。
+5. 存檔，進場景跑 VR 確認雙手 IK 跟得上控制器。
+
+---
+
+## 2026-05-09 - Official Arm IK Migration（第一階段）
+
+> 文件：[`docs/VR_OFFICIAL_IK_MIGRATION.md`](docs/VR_OFFICIAL_IK_MIGRATION.md)
+> 模型交付規格：[`docs/MODEL_AUTHORING_GUIDE.md`](docs/MODEL_AUTHORING_GUIDE.md)
+
+### 重點
+
+- 把手臂 IK 從自寫 EasyIK 開始切到官方 `SkinnedModelRenderer.SetIk("hand_left"/"hand_right", ...)`，與既有腳部 IK（`foot_left/right`）路徑一致。
+- 第一階段採並行驗證策略：新增 `[Property] bool UseOfficialIK { get; set; } = false;`，預設仍跑 EasyIK，留下實機 A/B 比較空間，避免一次切換造成遊戲不可玩。
+- 確認 `Assets/citizen_human.vanmgrph` 已內建 `ik.hand_left.position/rotation/enabled` 與 `ik.hand_right.*` 6 個參數（與 `ik.foot_left/right` 同結構），`Assets/VRCitizen.vmdl` 透過 `base_model_name = "models/citizen_human/citizen_human_male.vmdl"` 直接繼承官方 IK chain。**現有 player rig 不需要修改 animgraph 或 vmdl**。
+
+### 程式
+
+- 新增 [`Code/VRLogic/OfficialArmIkRouter.cs`](Code/VRLogic/OfficialArmIkRouter.cs)：
+  - `IIkParameterSink` 抽象（`SetIk(string, Transform)` / `ClearIk(string)`）
+  - `OfficialArmIkRouter.Apply(...)` 純路由邏輯與 `LeftHandKey`/`RightHandKey` 常數
+- [`Code/Player/VRAnimationHelper.cs`](Code/Player/VRAnimationHelper.cs)：
+  - 新增 `[Property] UseOfficialIK`、`[Property] ArmLength`（預設 30 inches，取代 EasyIK 模式下會用到的 `jointChainLength`）。
+  - `OnUpdate` 內手臂 IK 區塊改成 `if ( UseOfficialIK ) ApplyOfficialArmIk(); else { AdjustHints(); LeftArmIK.SolveIK(); RightArmIK.SolveIK(); SnapHands(); }`，後者完整保留 EasyIK 行為。
+  - `lastLeftHandPos` / `lastRightHandPos` 改讀 `TargetHandLeft/Right.WorldPosition`（兩條路徑共用）。
+  - `leftHandVecocity` / `rightHandVecocity` 改用 `TargetHandLeft/Right`，並在 GameObject invalid 時回 0，避免 NRE。
+  - `MoveShoulders()` 重構成讀 `TargetHandLeft/Right.WorldPosition` 與新 helper `ResolveChainLength(handIndex)`：EasyIK 模式下回傳 `LeftArmIK.jointChainLength`，官方 IK 模式下回傳 `ArmLength`。
+  - 新增 private adapter `SkinnedModelIkSink`，把 `Target.SetIk/ClearIk` 包成 `IIkParameterSink`，每幀只重 bind 一次 renderer，零分配。
+- 既有 `LeftArmIK / RightArmIK / LeftHint / RightHint / LeftHintAnchor / RightHintAnchor / SnapHands / AdjustHints / UpdateArms` 全保留，第二階段才移除。
+
+### 測試
+
+- 新增 [`Code/unittest/VRLogic/OfficialIkArmsTests.cs`](Code/unittest/VRLogic/OfficialIkArmsTests.cs)，5 個 Fact：
+  - `Apply_BothActive_PushesBothHands`
+  - `Apply_LeftInactive_ClearsLeftKeepsRight`
+  - `Apply_BothInactive_ClearsBothHands`
+  - `Apply_NullSink_DoesNotThrow`
+  - `Keys_MatchAnimgraphConvention`
+- `dotnet test` 31 通過 / 0 失敗（既有 26 + 新增 5），編譯零錯誤。
+
+### 文件
+
+- 新增 [`docs/VR_OFFICIAL_IK_MIGRATION.md`](docs/VR_OFFICIAL_IK_MIGRATION.md)：架構圖、切換用法、驗證清單、回滾方式、第二階段預定步驟。
+- 新增 [`docs/MODEL_AUTHORING_GUIDE.md`](docs/MODEL_AUTHORING_GUIDE.md)：給外部模型製作者的 FBX 交付規格、骨架命名、`AnimBindPose` 必要動畫、`Base Model = citizen_human_male.vmdl` 建議、ModelDoc attachment 與 hitbox tag 規範。
+- [`docs/VR_OFFICIAL_API_INTEGRATION.md`](docs/VR_OFFICIAL_API_INTEGRATION.md) 開頭加上指向新文件的 callout。
+- [`docs/VR_DI_ARCHITECTURE.md`](docs/VR_DI_ARCHITECTURE.md) 開頭加上「相關後續遷移文件」清單。
+
+### 第二階段預告（VR 驗證 OK 後再做，獨立 commit）
+
+- `VRAnimationHelper`：移除 `LeftArmIK / RightArmIK` 屬性、`SnapHands / AdjustHints / UpdateArms` 方法、`LeftHint / RightHint / LeftHintAnchor / RightHintAnchor` 屬性。
+- `VrhandInteraction`：刪除 line 29 未使用的 `[Property] private EasyIK IK`。
+- `Player.prefab`（在 s&box 編輯器內）：清掉 14 處 EasyIK 參考、刪除 `LeftHintHandInfluence` / `RightHintHandInfluence` 子物件。
+- 刪除整個 `Code/EasyIK/` 資料夾。
+- 補對應的第二階段 changelog 條目。
+
+---
+
 ## 2026-05-08 - VR Official API Integration（A / C / D / G）
 
 ### 1) 輸入抽象擴充（A）

@@ -3,6 +3,7 @@ using Sandbox.Services;
 using System;
 using System.Numerics;
 using TFT.VR.Abstractions;
+using TFT.VR.Logic;
 using static Sandbox.Citizen.VRAnimationHelper;
 
 // NOTE: We deliberately do NOT add `using Sandbox.VR;` here. The nested
@@ -29,8 +30,14 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	[Property] public Curve MinWalkSpeed { get; set; }
 	[Property, Feature( "Hands" )] public VRHand LeftHand { get; set; }
 	[Property, Feature( "Hands" )] public VRHand RightHand { get; set; }
-	[Property, Feature( "IK" ), Category( "Arms" )] public EasyIK LeftArmIK { get; set; }
-	[Property, Feature( "IK" ), Category( "Arms" )] public EasyIK RightArmIK { get; set; }
+
+	/// <summary>
+	/// Approximate shoulder-to-wrist length used by <see cref="MoveShoulders"/>
+	/// to scale the lerp between the rest-pose shoulder rotation and the
+	/// "lookat hand" rotation. Tune to roughly match the rest-pose arm length
+	/// of the rig in inches.
+	/// </summary>
+	[Property, Feature( "IK" ), Category( "Arms" )] public float ArmLength { get; set; } = 30f;
 
 	// Cached once in OnAwake so we don't allocate a List<VRHand> every frame
 	// from Fingers() / AnimateFingers(). Also avoids the .Equals(LeftHand)
@@ -274,16 +281,16 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		if ( !Target.IsValid() || _rigRebinder is null )
 			return;
 
-		var leftPrev = LeftArmIK?.ikTarget?.WorldTransform ?? default;
-		var rightPrev = RightArmIK?.ikTarget?.WorldTransform ?? default;
+		var leftPrev = TargetHandLeft.IsValid() ? TargetHandLeft.WorldTransform : default;
+		var rightPrev = TargetHandRight.IsValid() ? TargetHandRight.WorldTransform : default;
 
 		// Let render/animation settle before rebinding references.
 		await Task.Frame();
 		_rigRebinder.TryRebindRig( Target, mappingProfileId );
 		await Task.Frame();
 
-		BlendHandTarget( LeftArmIK?.ikTarget, leftPrev, 0.15f );
-		BlendHandTarget( RightArmIK?.ikTarget, rightPrev, 0.15f );
+		BlendHandTarget( TargetHandLeft, leftPrev, 0.15f );
+		BlendHandTarget( TargetHandRight, rightPrev, 0.15f );
 	}
 
 	private static void BlendHandTarget( GameObject target, Transform from, float duration )
@@ -317,13 +324,6 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	[Property] public bool CopyOpen { get; set; } = true;
 	[Property] public bool CopyClosed { get; set; } = true;
 
-	[Property, Feature( "IK" ), Category( "Arms" )] public GameObject LeftHint { get; set; }
-	[Property, Feature( "IK" ), Category( "Arms" )] public GameObject LeftHintAnchor { get; set; }
-	[Property, Feature( "IK" ), Category( "Arms" )] public GameObject RightHint { get; set; }
-	[Property, Feature( "IK" ), Category( "Arms" )] public GameObject RightHintAnchor { get; set; }
-	[Property, Feature( "IK" ), Category( "Arms" )] public float InfluenceVelocity { get; set; } = 120;
-	[Property, Feature( "IK" ), Category( "Arms" )] public float InfluenceSmoothness { get; set; } = 10;
-
 	[Property, Feature( "IK" ), Category( "Arms" )] public GameObject LeftTwist { get; set; }
 	[Property, Feature( "IK" ), Category( "Arms" )] public GameObject RightTwist { get; set; }
 	[Property, Feature( "IK" ), Category( "Arms" )] public float TwistWeight { get; set; } = 0.75f;
@@ -345,12 +345,10 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	[Button]
 	public void MatchHeight()
 	{
-		if ( updatingArms )
+		if ( !Target.IsValid() || !Head.IsValid() )
 			return;
 
 		Height = Target.WorldTransform.PointToLocal( Head.WorldPosition ).z / HeadHeights.y;
-
-		UpdateArms();
 	}
 
 	/// <summary>
@@ -365,49 +363,16 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 	/// 
 	[Property] public float Height = 1;
 
-	bool updatingArms = false;
-
-	[Button]
-	async void UpdateArms()
-	{
-		Log.Info( updatingArms );
-		updatingArms = true;
-		for ( int i = 0; i < 2; i++ )
-		{
-			var ik = i == 0 ? LeftArmIK : RightArmIK;
-			var hand = i == 0 ? TargetHandLeft : TargetHandRight;
-
-			Log.Info( ik );
-			foreach ( var bone in ik.jointTransforms )
-			{
-				bone.Flags = GameObjectFlags.Bone;
-			}
-
-			hand.Flags = GameObjectFlags.Bone;
-
-			await Task.Frame();
-			await Task.Frame();
-
-			ik.Awake();
-
-			hand.Flags = GameObjectFlags.Bone | GameObjectFlags.ProceduralBone;
-
-			foreach ( var bone in ik.jointTransforms )
-			{
-				bone.Flags = GameObjectFlags.Bone | GameObjectFlags.ProceduralBone;
-			}
-
-			Log.Info( i );
-		}
-		updatingArms = false;
-	}
-
 	[Property, Feature( "IK" ), Category( "Feet" )] public GameObject IkLeftFoot { get; set; }
 	[Property, Feature( "IK" ), Category( "Feet" )] public GameObject IkRightFoot { get; set; }
 
-	float leftHandVecocity => (LeftArmIK.ikTarget.WorldPosition - lastLeftHandPos).Length / Time.Delta;
+	float leftHandVecocity => TargetHandLeft.IsValid()
+		? (TargetHandLeft.WorldPosition - lastLeftHandPos).Length / Time.Delta
+		: 0f;
 
-	float rightHandVecocity => (RightArmIK.ikTarget.WorldPosition - lastRightHandPos).Length / Time.Delta;
+	float rightHandVecocity => TargetHandRight.IsValid()
+		? (TargetHandRight.WorldPosition - lastRightHandPos).Length / Time.Delta
+		: 0f;
 
 	Vector3 lastLeftHandPos;
 	Vector3 lastRightHandPos;
@@ -440,45 +405,54 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 
 		Twist();
 
-		AdjustHints();
+		ApplyOfficialArmIk();
 
-		LeftArmIK.SolveIK();
-
-		RightArmIK.SolveIK();
-
-		SnapHands();
-
-		lastLeftHandPos = LeftArmIK.ikTarget.WorldPosition;
-
-		lastRightHandPos = RightArmIK.ikTarget.WorldPosition;
+		lastLeftHandPos = TargetHandLeft.IsValid() ? TargetHandLeft.WorldPosition : lastLeftHandPos;
+		lastRightHandPos = TargetHandRight.IsValid() ? TargetHandRight.WorldPosition : lastRightHandPos;
 	}
 
+	private SkinnedModelIkSink _ikSink;
 
-	float leftHintLerp;
-	float rightHintLerp;
-	private void AdjustHints()
+	/// <summary>
+	/// Forwards the live VR hand poses to the model's animgraph IK rules.
+	/// Mirrors the foot path (<see cref="SkinnedModelRenderer.SetIk(string, Transform)"/>
+	/// for <c>foot_left</c> / <c>foot_right</c>) but keyed on <c>hand_left</c>
+	/// / <c>hand_right</c>. The pure routing logic lives in
+	/// <see cref="OfficialArmIkRouter"/>; this method only resolves which
+	/// hand is currently driveable and adapts the engine renderer.
+	/// </summary>
+	private void ApplyOfficialArmIk()
 	{
-		for ( int i = 0; i < 2; i++ )
-		{
-			var hint = i == 0 ? LeftHint : RightHint;
-			var hintAnchor = i == 0 ? LeftHintAnchor : RightHintAnchor;
-			var ik = i == 0 ? LeftArmIK : RightArmIK;
-			var velocity = i == 0 ? (LeftArmIK.ikTarget.WorldPosition - lastLeftHandPos) : (RightArmIK.ikTarget.WorldPosition - lastRightHandPos);
-			
-			var x = MathX.Clamp( Normalize( velocity.Length, 0, InfluenceVelocity ), 0, 1);
+		if ( !Target.IsValid() )
+			return;
 
-			if( i == 0 )
-			{
-				leftHintLerp = MathX.Lerp( leftHintLerp, x, InfluenceSmoothness * Time.Delta);
-			}
-			else
-			{
-				rightHintLerp = MathX.Lerp( rightHintLerp, x, InfluenceSmoothness * Time.Delta);
-			}
+		_ikSink ??= new SkinnedModelIkSink();
+		_ikSink.Bind( Target );
 
-			hint.WorldPosition = Vector3.Lerp(hintAnchor.WorldPosition, ik.ikTarget.WorldPosition + velocity.Normal * ik.jointChainLength/2 ,i == 0 ? leftHintLerp : rightHintLerp);
-		}
+		var leftActive = TargetHandLeft.IsValid() && TargetHandLeft.Active;
+		var rightActive = TargetHandRight.IsValid() && TargetHandRight.Active;
+
+		OfficialArmIkRouter.Apply(
+			_ikSink,
+			leftActive,
+			leftActive ? TargetHandLeft.WorldTransform : default,
+			rightActive,
+			rightActive ? TargetHandRight.WorldTransform : default );
 	}
+
+	/// <summary>
+	/// Single cached adapter that lets the pure-logic
+	/// <see cref="OfficialArmIkRouter"/> talk to the engine renderer without
+	/// any per-frame allocation.
+	/// </summary>
+	private sealed class SkinnedModelIkSink : IIkParameterSink
+	{
+		private SkinnedModelRenderer _renderer;
+		public void Bind( SkinnedModelRenderer renderer ) => _renderer = renderer;
+		public void SetIk( string name, Transform pose ) => _renderer?.SetIk( name, pose );
+		public void ClearIk( string name ) => _renderer?.ClearIk( name );
+	}
+
 
 	private void Twist()
 	{
@@ -495,14 +469,28 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 			var shoulderRotation = i == 0 ? LeftShoulderDefaultRotation : RightShoulderDefaultRotation;
 			var shoulderOffset = i == 0 ? LeftShoulderOffset : RightShoulderOffset;
 			var armOrigin = i == 0 ? LeftArmOrigin : RightArmOrigin;
-			var ik = i == 0 ? LeftArmIK : RightArmIK;
+			var handTarget = i == 0 ? TargetHandLeft : TargetHandRight;
 
-			var direction = ik.ikTarget.WorldPosition - shoulder.WorldPosition;
+			if ( !shoulder.IsValid() || !armOrigin.IsValid() || !handTarget.IsValid() )
+				continue;
 
-			var lerp = MathF.Pow( MathX.Clamp( Normalize( Vector3.DistanceBetween( armOrigin.WorldPosition, ik.ikTarget.WorldPosition ), 0, ik.jointChainLength ) - ShoulderMoveFraction, 0 , MaxHandShoulderInfluence), ShoulderLerpPower );
+			var handPos = handTarget.WorldPosition;
+			var chainLength = ResolveChainLength( i );
+			var direction = handPos - shoulder.WorldPosition;
+
+			var lerp = MathF.Pow( MathX.Clamp( Normalize( Vector3.DistanceBetween( armOrigin.WorldPosition, handPos ), 0, chainLength ) - ShoulderMoveFraction, 0 , MaxHandShoulderInfluence), ShoulderLerpPower );
 
 			shoulder.WorldRotation = Rotation.Lerp( shoulder.Parent.WorldTransform.RotationToWorld( shoulderRotation ), Rotation.LookAt( direction ) * shoulderOffset, lerp );
 		}
+	}
+
+	// Editor-tunable arm chain length for the shoulder lerp envelope; we no
+	// longer carry an EasyIK-derived measurement now that arm IK runs through
+	// the animgraph, so the value is taken straight from the property.
+	private float ResolveChainLength( int handIndex )
+	{
+		_ = handIndex;
+		return MathF.Max( ArmLength, 0.01f );
 	}
 
 	private void AnimateFingers()
@@ -596,11 +584,6 @@ public sealed class VRAnimationHelper : Component, Component.ExecuteInEditor
 		}
 	}
 
-	private void SnapHands()
-	{
-		TargetHandLeft.WorldTransform = LeftArmIK.ikTarget.WorldTransform;
-		TargetHandRight.WorldTransform = RightArmIK.ikTarget.WorldTransform;
-	}
 	float lastYaw;
 
 	Vector3 dampedPos;
